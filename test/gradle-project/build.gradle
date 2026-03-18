@@ -1,0 +1,17 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+application {
+    mainClass = 'com.example.App'
+}
+
+tasks.withType(JavaCompile) {
+    options.compilerArgs << '-g'  // Include debug info
+}

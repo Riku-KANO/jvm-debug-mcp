@@ -1,0 +1,22 @@
+node_modules/
+dist/
+
+*.class
+*.jar
+
+# Gradle
+.gradle/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+codebase-map.html

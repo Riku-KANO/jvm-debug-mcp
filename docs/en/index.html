@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JVM Debug MCP - Documentation</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="header-inner">
+    <a href="../" class="site-title">JVM Debug MCP</a>
+    <div class="header-nav">
+      <a href="https://github.com/Riku-KANO/jvm-debug-mcp">GitHub</a>
+      <div class="lang-switch">
+        <a href="../en/" class="active">EN</a>
+        <a href="../ja/">JA</a>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="page-layout">
+  <aside class="sidebar">
+    <nav>
+      <ul>
+        <li>
+          <div class="section-label">Getting Started</div>
+          <ul>
+            <li><a href="#overview" class="active">Overview</a></li>
+            <li><a href="#installation">Installation</a></li>
+            <li><a href="#quick-start">Quick Start</a></li>
+          </ul>
+        </li>
+        <li>
+          <div class="section-label">Features</div>
+          <ul>
+            <li><a href="#build-systems">Build Systems</a></li>
+            <li><a href="#breakpoints">Breakpoints</a></li>
+            <li><a href="#multi-thread">Multi-Thread Debugging</a></li>
+            <li><a href="#inspection">Variable Inspection</a></li>
+          </ul>
+        </li>
+        <li>
+          <div class="section-label">Reference</div>
+          <ul>
+            <li><a href="#tools">MCP Tools</a></li>
+            <li><a href="#architecture">Architecture</a></li>
+            <li><a href="#troubleshooting">Troubleshooting</a></li>
+          </ul>
+        </li>
+      </ul>
+    </nav>
+  </aside>
+
+  <main class="main-content">
+    <h1 id="overview">JVM Debug MCP</h1>
+    <p class="lead">
+      An MCP (Model Context Protocol) server that enables AI assistants to debug Java and Kotlin applications
+      through the JDWP (Java Debug Wire Protocol).
+    </p>
+
+    <div class="card-grid">
+      <div class="card">
+        <h4>Breakpoint Debugging</h4>
+        <p>Set breakpoints by class name and line number, step through code, and inspect variables.</p>
+      </div>
+      <div class="card">
+        <h4>Multi-Thread Support</h4>
+        <p>Debug multiple threads independently with per-thread suspend, resume, and step operations.</p>
+      </div>
+      <div class="card">
+        <h4>Build System Integration</h4>
+        <p>Auto-detect and launch Gradle and Maven projects with debug flags automatically configured.</p>
+      </div>
+      <div class="card">
+        <h4>22 MCP Tools</h4>
+        <p>Full debug workflow from project detection to variable inspection, all accessible via MCP.</p>
+      </div>
+    </div>
+
+    <!-- Installation -->
+    <h2 id="installation">Installation</h2>
+
+    <h3>Prerequisites</h3>
+    <ul>
+      <li>Node.js 18+</li>
+      <li>Java JDK 11+ (for the target application)</li>
+      <li>Gradle or Maven (optional, for build system integration)</li>
+    </ul>
+
+    <h3>Install</h3>
+    <pre><code>git clone https://github.com/Riku-KANO/jvm-debug-mcp.git
+cd jvm-debug-mcp
+npm install
+npm run build</code></pre>
+
+    <h3>MCP Client Configuration</h3>
+    <p>Add the following to your MCP client configuration (e.g., Claude Desktop <code>claude_desktop_config.json</code>):</p>
+    <pre><code>{
+  "mcpServers": {
+    "jvm-debug": {
+      "command": "node",
+      "args": ["/path/to/jvm-debug-mcp/dist/index.js"]
+    }
+  }
+}</code></pre>
+
+    <!-- Quick Start -->
+    <h2 id="quick-start">Quick Start</h2>
+
+    <h3>Option A: Launch &amp; Debug a Project</h3>
+    <p>For Gradle or Maven projects, the MCP server can build, launch, and attach the debugger automatically.</p>
+    <ol class="steps">
+      <li>
+        <strong>Detect the project</strong>
+        <pre><code>detect_project({ projectDir: "/path/to/your/project" })</code></pre>
+      </li>
+      <li>
+        <strong>Launch with debug agent</strong>
+        <pre><code>launch({ projectDir: "/path/to/your/project" })</code></pre>
+        <p>This builds the project and starts it with JDWP enabled on port 5005.</p>
+      </li>
+      <li>
+        <strong>Connect the debugger</strong>
+        <pre><code>connect({ host: "localhost", port: 5005 })</code></pre>
+      </li>
+      <li>
+        <strong>Set a breakpoint and debug</strong>
+        <pre><code>set_breakpoint({ className: "com.example.MyController", line: 25 })
+// Trigger the code path, then:
+get_stack_trace({})
+get_variables({})</code></pre>
+      </li>
+    </ol>
+
+    <h3>Option B: Attach to an Existing JVM</h3>
+    <p>Start your application with the JDWP agent, then connect:</p>
+    <pre><code># Start your application with JDWP
+java -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005 -jar app.jar
+
+# Then use the connect tool
+connect({ host: "localhost", port: 5005 })</code></pre>
+
+    <!-- Build Systems -->
+    <h2 id="build-systems">Build System Support</h2>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Build System</th>
+          <th>Detection</th>
+          <th>Default Task</th>
+          <th>Debug Args Injection</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Gradle (Groovy DSL)</td>
+          <td><code>build.gradle</code></td>
+          <td><code>run</code> / <code>bootRun</code></td>
+          <td>Init script (<code>--init-script</code>)</td>
+        </tr>
+        <tr>
+          <td>Gradle (Kotlin DSL)</td>
+          <td><code>build.gradle.kts</code></td>
+          <td><code>run</code> / <code>bootRun</code></td>
+          <td>Init script (<code>--init-script</code>)</td>
+        </tr>
+        <tr>
+          <td>Maven</td>
+          <td><code>pom.xml</code></td>
+          <td><code>spring-boot:run</code> / <code>exec:java</code></td>
+          <td><code>-Dspring-boot.run.jvmArguments</code> / <code>MAVEN_OPTS</code></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Spring Boot</h3>
+    <p>Spring Boot projects are automatically detected. The server checks for Spring Boot plugins in your build files and selects the appropriate run task:</p>
+    <ul>
+      <li><strong>Gradle</strong>: Uses <code>bootRun</code> when <code>org.springframework.boot</code> plugin is detected</li>
+      <li><strong>Maven</strong>: Uses <code>spring-boot:run</code> when <code>spring-boot-maven-plugin</code> is detected</li>
+    </ul>
+
+    <div class="callout callout-info">
+      <strong>Gradle Init Script</strong>: JDWP arguments are injected only into <code>JavaExec</code> tasks (like <code>bootRun</code>) via a temporary Gradle init script. This ensures the Gradle daemon JVM is not affected.
+    </div>
+
+    <!-- Breakpoints -->
+    <h2 id="breakpoints">Breakpoints</h2>
+    <p>Set breakpoints using fully qualified class names and line numbers:</p>
+    <pre><code>set_breakpoint({
+  className: "com.example.UserService",
+  line: 42,
+  suspendPolicy: "thread"  // "thread" (default) or "all"
+})</code></pre>
+
+    <h3>Suspend Policies</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Policy</th>
+          <th>Behavior</th>
+          <th>Use Case</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>thread</code></td>
+          <td>Only the thread that hit the breakpoint is suspended</td>
+          <td>Multi-thread debugging, API servers</td>
+        </tr>
+        <tr>
+          <td><code>all</code></td>
+          <td>All threads are suspended</td>
+          <td>Deterministic debugging, race condition investigation</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- Multi-Thread -->
+    <h2 id="multi-thread">Multi-Thread Debugging</h2>
+    <p>
+      The server supports true multi-thread debugging. When using <code>suspendPolicy: "thread"</code>,
+      each thread can be independently controlled:
+    </p>
+
+    <ol class="steps">
+      <li>
+        <strong>Set breakpoints on different handlers</strong>
+        <pre><code>set_breakpoint({ className: "com.example.Api1Controller", line: 30 })
+set_breakpoint({ className: "com.example.Api2Controller", line: 25 })</code></pre>
+      </li>
+      <li>
+        <strong>Trigger both endpoints</strong> (e.g., via <code>curl</code>)
+        <p>Both threads hit their breakpoints independently.</p>
+      </li>
+      <li>
+        <strong>Inspect each thread</strong>
+        <pre><code>get_threads({})  // See all threads and their status
+get_stack_trace({ threadId: "42" })
+get_variables({ threadId: "42" })
+get_stack_trace({ threadId: "43" })
+get_variables({ threadId: "43" })</code></pre>
+      </li>
+      <li>
+        <strong>Step through each thread independently</strong>
+        <pre><code>step_over({ threadId: "42" })  // Thread 43 stays paused
+step_over({ threadId: "43" })  // Thread 42 stays paused</code></pre>
+      </li>
+    </ol>
+
+    <!-- Variable Inspection -->
+    <h2 id="inspection">Variable Inspection</h2>
+    <p>Inspect local variables, object fields, and array elements:</p>
+
+    <pre><code>// Get local variables in the current frame
+get_variables({ threadId: "42", frameIndex: 0 })
+// Output:
+//   String name = "Alice"
+//   int count = 5
+//   UserService userService = Object@1234
+
+// Drill into an object
+inspect_object({ objectId: "1234" })
+// Output:
+//   String name = "UserService"
+//   Map&lt;String, User&gt; cache = Object@5678
+
+// Inspect array elements
+inspect_array({ arrayId: "9012", startIndex: 0, length: 10 })</code></pre>
+
+    <!-- MCP Tools -->
+    <h2 id="tools">MCP Tools Reference</h2>
+
+    <h3>Project Management</h3>
+    <table>
+      <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>detect_project</code></td><td>Detect build system (Gradle/Maven) in a directory</td></tr>
+        <tr><td><code>build</code></td><td>Build a Gradle or Maven project</td></tr>
+        <tr><td><code>launch</code></td><td>Build and launch with JDWP debug agent enabled</td></tr>
+        <tr><td><code>stop</code></td><td>Stop the launched process</td></tr>
+        <tr><td><code>process_output</code></td><td>Get recent stdout/stderr from the launched process</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Connection</h3>
+    <table>
+      <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>connect</code></td><td>Connect to a JVM with JDWP debug agent</td></tr>
+        <tr><td><code>disconnect</code></td><td>Disconnect from the debug session</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Breakpoints</h3>
+    <table>
+      <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>set_breakpoint</code></td><td>Set a breakpoint at class:line with suspend policy</td></tr>
+        <tr><td><code>remove_breakpoint</code></td><td>Remove a breakpoint by ID</td></tr>
+        <tr><td><code>list_breakpoints</code></td><td>List all active breakpoints</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Execution Control</h3>
+    <table>
+      <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>resume</code></td><td>Resume all threads or a specific thread</td></tr>
+        <tr><td><code>pause</code></td><td>Suspend all threads</td></tr>
+        <tr><td><code>step_over</code></td><td>Step over the current line</td></tr>
+        <tr><td><code>step_into</code></td><td>Step into a method call</td></tr>
+        <tr><td><code>step_out</code></td><td>Step out of the current method</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Inspection</h3>
+    <table>
+      <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>get_stack_trace</code></td><td>Get stack trace of a suspended thread</td></tr>
+        <tr><td><code>get_variables</code></td><td>Get local variables in a stack frame</td></tr>
+        <tr><td><code>inspect_object</code></td><td>Inspect fields of an object by ID</td></tr>
+        <tr><td><code>inspect_array</code></td><td>Inspect elements of an array by ID</td></tr>
+        <tr><td><code>get_threads</code></td><td>List all threads with status</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Status</h3>
+    <table>
+      <thead><tr><th>Tool</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>get_events</code></td><td>Get recent debug event log</td></tr>
+        <tr><td><code>status</code></td><td>Get current debug session status</td></tr>
+      </tbody>
+    </table>
+
+    <!-- Architecture -->
+    <h2 id="architecture">Architecture</h2>
+
+    <h3>System Overview</h3>
+    <pre><code>┌──────────────────┐     MCP (stdio)     ┌──────────────────┐
+│   AI Assistant   │ ◄─────────────────► │  JVM Debug MCP   │
+│  (Claude, etc.)  │                     │     Server       │
+└──────────────────┘                     └────────┬─────────┘
+                                                  │
+                                         JDWP (TCP:5005)
+                                                  │
+                                         ┌────────▼─────────┐
+                                         │   Target JVM     │
+                                         │  (Java/Kotlin)   │
+                                         └──────────────────┘</code></pre>
+
+    <h3>Protocol Stack</h3>
+    <p>This server implements the <strong>JDWP (Java Debug Wire Protocol)</strong> directly over TCP, without relying on JDI (Java Debug Interface). This allows it to run in a pure Node.js environment.</p>
+
+    <table>
+      <thead><tr><th>Layer</th><th>Technology</th><th>Role</th></tr></thead>
+      <tbody>
+        <tr><td>Client Interface</td><td>MCP (stdio)</td><td>Communication with AI assistants</td></tr>
+        <tr><td>Debug Protocol</td><td>JDWP (TCP)</td><td>Binary protocol for JVM debugging</td></tr>
+        <tr><td>Target</td><td>JVM (JVMTI agent)</td><td>Java/Kotlin application being debugged</td></tr>
+      </tbody>
+    </table>
+
+    <!-- Troubleshooting -->
+    <h2 id="troubleshooting">Troubleshooting</h2>
+
+    <h3>Connection refused</h3>
+    <p>Ensure the target JVM is started with the JDWP agent and the port matches:</p>
+    <pre><code>-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005</code></pre>
+
+    <h3>Class not found when setting breakpoint</h3>
+    <ul>
+      <li>Use the fully qualified class name (e.g., <code>com.example.MyClass</code>, not <code>MyClass</code>)</li>
+      <li>The class must be loaded by the JVM. If using deferred breakpoints, trigger class loading first.</li>
+    </ul>
+
+    <h3>Port already in use</h3>
+    <p>Another process may be using port 5005. Either stop it or specify a different port:</p>
+    <pre><code>launch({ projectDir: "...", port: 5006 })</code></pre>
+
+    <h3>Gradle daemon conflict</h3>
+    <div class="callout callout-info">
+      This server uses a Gradle init script to inject debug flags only into <code>JavaExec</code> tasks. The Gradle daemon itself is never affected. If you still encounter issues, try <code>./gradlew --stop</code> before launching.
+    </div>
+  </main>
+</div>
+
+<footer class="site-footer">
+  <p>JVM Debug MCP &mdash; Licensed under ISC</p>
+</footer>
+
+</body>
+</html>

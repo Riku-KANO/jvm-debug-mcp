@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JVM Debug MCP</title>
+  <link rel="stylesheet" href="assets/style.css">
+  <script>
+    const userLang = navigator.language || navigator.userLanguage;
+    if (userLang.startsWith('ja')) {
+      window.location.replace('ja/');
+    } else {
+      window.location.replace('en/');
+    }
+  </script>
+</head>
+<body>
+  <noscript>
+    <div class="hero">
+      <h1>JVM Debug MCP</h1>
+      <p class="lead">MCP server for debugging Java/Kotlin applications via JDWP</p>
+      <div class="hero-buttons">
+        <a href="en/" class="btn btn-primary">English</a>
+        <a href="ja/" class="btn btn-secondary">日本語</a>
+      </div>
+    </div>
+  </noscript>
+</body>
+</html>

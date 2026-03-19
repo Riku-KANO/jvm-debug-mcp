@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JVM Debug MCP - ドキュメント</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="header-inner">
+    <a href="../" class="site-title">JVM Debug MCP</a>
+    <div class="header-nav">
+      <a href="https://github.com/Riku-KANO/jvm-debug-mcp">GitHub</a>
+      <div class="lang-switch">
+        <a href="../en/">EN</a>
+        <a href="../ja/" class="active">JA</a>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="page-layout">
+  <aside class="sidebar">
+    <nav>
+      <ul>
+        <li>
+          <div class="section-label">はじめに</div>
+          <ul>
+            <li><a href="#overview" class="active">概要</a></li>
+            <li><a href="#installation">インストール</a></li>
+            <li><a href="#quick-start">クイックスタート</a></li>
+          </ul>
+        </li>
+        <li>
+          <div class="section-label">機能</div>
+          <ul>
+            <li><a href="#build-systems">ビルドシステム</a></li>
+            <li><a href="#breakpoints">ブレークポイント</a></li>
+            <li><a href="#multi-thread">マルチスレッドデバッグ</a></li>
+            <li><a href="#inspection">変数の確認</a></li>
+          </ul>
+        </li>
+        <li>
+          <div class="section-label">リファレンス</div>
+          <ul>
+            <li><a href="#tools">MCP ツール一覧</a></li>
+            <li><a href="#architecture">アーキテクチャ</a></li>
+            <li><a href="#troubleshooting">トラブルシューティング</a></li>
+          </ul>
+        </li>
+      </ul>
+    </nav>
+  </aside>
+
+  <main class="main-content">
+    <h1 id="overview">JVM Debug MCP</h1>
+    <p class="lead">
+      JDWP (Java Debug Wire Protocol) を通じて、AI アシスタントが Java/Kotlin アプリケーションをデバッグできるようにする MCP サーバーです。
+    </p>
+
+    <div class="card-grid">
+      <div class="card">
+        <h4>ブレークポイントデバッグ</h4>
+        <p>クラス名と行番号でブレークポイントを設定し、コードをステップ実行して変数を確認できます。</p>
+      </div>
+      <div class="card">
+        <h4>マルチスレッド対応</h4>
+        <p>スレッドごとに独立してサスペンド・レジューム・ステップ実行が可能です。</p>
+      </div>
+      <div class="card">
+        <h4>ビルドシステム統合</h4>
+        <p>Gradle / Maven プロジェクトを自動検出し、デバッグフラグ付きで起動します。</p>
+      </div>
+      <div class="card">
+        <h4>22 の MCP ツール</h4>
+        <p>プロジェクト検出から変数確認まで、デバッグワークフロー全体を MCP 経由で操作できます。</p>
+      </div>
+    </div>
+
+    <!-- インストール -->
+    <h2 id="installation">インストール</h2>
+
+    <h3>前提条件</h3>
+    <ul>
+      <li>Node.js 18 以上</li>
+      <li>Java JDK 11 以上（デバッグ対象アプリケーション用）</li>
+      <li>Gradle または Maven（ビルドシステム統合を利用する場合）</li>
+    </ul>
+
+    <h3>セットアップ</h3>
+    <pre><code>git clone https://github.com/Riku-KANO/jvm-debug-mcp.git
+cd jvm-debug-mcp
+npm install
+npm run build</code></pre>
+
+    <h3>MCP クライアント設定</h3>
+    <p>MCP クライアントの設定ファイル（例: Claude Desktop の <code>claude_desktop_config.json</code>）に以下を追加します：</p>
+    <pre><code>{
+  "mcpServers": {
+    "jvm-debug": {
+      "command": "node",
+      "args": ["/path/to/jvm-debug-mcp/dist/index.js"]
+    }
+  }
+}</code></pre>
+
+    <!-- クイックスタート -->
+    <h2 id="quick-start">クイックスタート</h2>
+
+    <h3>方法 A: プロジェクトの起動とデバッグ</h3>
+    <p>Gradle / Maven プロジェクトの場合、MCP サーバーがビルド・起動・デバッガ接続を自動で行います。</p>
+    <ol class="steps">
+      <li>
+        <strong>プロジェクトを検出</strong>
+        <pre><code>detect_project({ projectDir: "/path/to/your/project" })</code></pre>
+      </li>
+      <li>
+        <strong>デバッグエージェント付きで起動</strong>
+        <pre><code>launch({ projectDir: "/path/to/your/project" })</code></pre>
+        <p>プロジェクトをビルドし、JDWP をポート 5005 で有効にして起動します。</p>
+      </li>
+      <li>
+        <strong>デバッガを接続</strong>
+        <pre><code>connect({ host: "localhost", port: 5005 })</code></pre>
+      </li>
+      <li>
+        <strong>ブレークポイントを設定してデバッグ</strong>
+        <pre><code>set_breakpoint({ className: "com.example.MyController", line: 25 })
+// 該当コードパスを実行した後:
+get_stack_trace({})
+get_variables({})</code></pre>
+      </li>
+    </ol>
+
+    <h3>方法 B: 起動済みの JVM に接続</h3>
+    <p>アプリケーションを JDWP エージェント付きで起動してから接続します：</p>
+    <pre><code># JDWP 付きでアプリケーションを起動
+java -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005 -jar app.jar
+
+# connect ツールで接続
+connect({ host: "localhost", port: 5005 })</code></pre>
+
+    <!-- ビルドシステム -->
+    <h2 id="build-systems">ビルドシステム対応</h2>
+
+    <table>
+      <thead>
+        <tr>
+          <th>ビルドシステム</th>
+          <th>検出ファイル</th>
+          <th>デフォルトタスク</th>
+          <th>デバッグ引数の注入方法</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Gradle (Groovy DSL)</td>
+          <td><code>build.gradle</code></td>
+          <td><code>run</code> / <code>bootRun</code></td>
+          <td>Init script (<code>--init-script</code>)</td>
+        </tr>
+        <tr>
+          <td>Gradle (Kotlin DSL)</td>
+          <td><code>build.gradle.kts</code></td>
+          <td><code>run</code> / <code>bootRun</code></td>
+          <td>Init script (<code>--init-script</code>)</td>
+        </tr>
+        <tr>
+          <td>Maven</td>
+          <td><code>pom.xml</code></td>
+          <td><code>spring-boot:run</code> / <code>exec:java</code></td>
+          <td><code>-Dspring-boot.run.jvmArguments</code> / <code>MAVEN_OPTS</code></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Spring Boot</h3>
+    <p>Spring Boot プロジェクトは自動的に検出されます。ビルドファイル内の Spring Boot プラグインを確認し、適切な実行タスクを選択します：</p>
+    <ul>
+      <li><strong>Gradle</strong>: <code>org.springframework.boot</code> プラグインを検出すると <code>bootRun</code> を使用</li>
+      <li><strong>Maven</strong>: <code>spring-boot-maven-plugin</code> を検出すると <code>spring-boot:run</code> を使用</li>
+    </ul>
+
+    <div class="callout callout-info">
+      <strong>Gradle Init Script</strong>: JDWP 引数は一時的な Gradle init script を通じて <code>JavaExec</code> タスク（<code>bootRun</code> など）にのみ注入されます。Gradle デーモンの JVM には影響しません。
+    </div>
+
+    <!-- ブレークポイント -->
+    <h2 id="breakpoints">ブレークポイント</h2>
+    <p>完全修飾クラス名と行番号を指定してブレークポイントを設定します：</p>
+    <pre><code>set_breakpoint({
+  className: "com.example.UserService",
+  line: 42,
+  suspendPolicy: "thread"  // "thread"（デフォルト）または "all"
+})</code></pre>
+
+    <h3>サスペンドポリシー</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>ポリシー</th>
+          <th>動作</th>
+          <th>ユースケース</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>thread</code></td>
+          <td>ブレークポイントに到達したスレッドのみ停止</td>
+          <td>マルチスレッドデバッグ、API サーバー</td>
+        </tr>
+        <tr>
+          <td><code>all</code></td>
+          <td>全スレッドが停止</td>
+          <td>確定的なデバッグ、競合状態の調査</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- マルチスレッド -->
+    <h2 id="multi-thread">マルチスレッドデバッグ</h2>
+    <p>
+      本サーバーは真のマルチスレッドデバッグに対応しています。
+      <code>suspendPolicy: "thread"</code> を使用すると、各スレッドを独立して制御できます：
+    </p>
+
+    <ol class="steps">
+      <li>
+        <strong>異なるハンドラにブレークポイントを設定</strong>
+        <pre><code>set_breakpoint({ className: "com.example.Api1Controller", line: 30 })
+set_breakpoint({ className: "com.example.Api2Controller", line: 25 })</code></pre>
+      </li>
+      <li>
+        <strong>両方のエンドポイントにリクエスト</strong>（例: <code>curl</code> で）
+        <p>両スレッドがそれぞれのブレークポイントで独立して停止します。</p>
+      </li>
+      <li>
+        <strong>各スレッドを確認</strong>
+        <pre><code>get_threads({})  // 全スレッドとステータスを表示
+get_stack_trace({ threadId: "42" })
+get_variables({ threadId: "42" })
+get_stack_trace({ threadId: "43" })
+get_variables({ threadId: "43" })</code></pre>
+      </li>
+      <li>
+        <strong>各スレッドを独立してステップ実行</strong>
+        <pre><code>step_over({ threadId: "42" })  // スレッド 43 は停止したまま
+step_over({ threadId: "43" })  // スレッド 42 は停止したまま</code></pre>
+      </li>
+    </ol>
+
+    <!-- 変数の確認 -->
+    <h2 id="inspection">変数の確認</h2>
+    <p>ローカル変数、オブジェクトのフィールド、配列の要素を確認できます：</p>
+
+    <pre><code>// 現在のフレームのローカル変数を取得
+get_variables({ threadId: "42", frameIndex: 0 })
+// 出力例:
+//   String name = "Alice"
+//   int count = 5
+//   UserService userService = Object@1234
+
+// オブジェクトの詳細を確認
+inspect_object({ objectId: "1234" })
+// 出力例:
+//   String name = "UserService"
+//   Map&lt;String, User&gt; cache = Object@5678
+
+// 配列の要素を確認
+inspect_array({ arrayId: "9012", startIndex: 0, length: 10 })</code></pre>
+
+    <!-- MCP ツール一覧 -->
+    <h2 id="tools">MCP ツール一覧</h2>
+
+    <h3>プロジェクト管理</h3>
+    <table>
+      <thead><tr><th>ツール</th><th>説明</th></tr></thead>
+      <tbody>
+        <tr><td><code>detect_project</code></td><td>ディレクトリ内のビルドシステム（Gradle/Maven）を検出</td></tr>
+        <tr><td><code>build</code></td><td>Gradle または Maven プロジェクトをビルド</td></tr>
+        <tr><td><code>launch</code></td><td>JDWP デバッグエージェント付きでビルド・起動</td></tr>
+        <tr><td><code>stop</code></td><td>起動したプロセスを停止</td></tr>
+        <tr><td><code>process_output</code></td><td>起動したプロセスの標準出力/標準エラーを取得</td></tr>
+      </tbody>
+    </table>
+
+    <h3>接続</h3>
+    <table>
+      <thead><tr><th>ツール</th><th>説明</th></tr></thead>
+      <tbody>
+        <tr><td><code>connect</code></td><td>JDWP デバッグエージェントが動作する JVM に接続</td></tr>
+        <tr><td><code>disconnect</code></td><td>デバッグセッションから切断</td></tr>
+      </tbody>
+    </table>
+
+    <h3>ブレークポイント</h3>
+    <table>
+      <thead><tr><th>ツール</th><th>説明</th></tr></thead>
+      <tbody>
+        <tr><td><code>set_breakpoint</code></td><td>クラス:行番号にサスペンドポリシー付きでブレークポイントを設定</td></tr>
+        <tr><td><code>remove_breakpoint</code></td><td>ID を指定してブレークポイントを削除</td></tr>
+        <tr><td><code>list_breakpoints</code></td><td>全アクティブブレークポイントを一覧表示</td></tr>
+      </tbody>
+    </table>
+
+    <h3>実行制御</h3>
+    <table>
+      <thead><tr><th>ツール</th><th>説明</th></tr></thead>
+      <tbody>
+        <tr><td><code>resume</code></td><td>全スレッドまたは特定スレッドを再開</td></tr>
+        <tr><td><code>pause</code></td><td>全スレッドを一時停止</td></tr>
+        <tr><td><code>step_over</code></td><td>現在の行をステップオーバー</td></tr>
+        <tr><td><code>step_into</code></td><td>メソッド呼び出しにステップイン</td></tr>
+        <tr><td><code>step_out</code></td><td>現在のメソッドからステップアウト</td></tr>
+      </tbody>
+    </table>
+
+    <h3>状態確認</h3>
+    <table>
+      <thead><tr><th>ツール</th><th>説明</th></tr></thead>
+      <tbody>
+        <tr><td><code>get_stack_trace</code></td><td>停止中のスレッドのスタックトレースを取得</td></tr>
+        <tr><td><code>get_variables</code></td><td>スタックフレーム内のローカル変数を取得</td></tr>
+        <tr><td><code>inspect_object</code></td><td>オブジェクト ID でフィールドを確認</td></tr>
+        <tr><td><code>inspect_array</code></td><td>配列 ID で要素を確認</td></tr>
+        <tr><td><code>get_threads</code></td><td>全スレッドとステータスを一覧表示</td></tr>
+        <tr><td><code>get_events</code></td><td>最近のデバッグイベントログを取得</td></tr>
+        <tr><td><code>status</code></td><td>現在のデバッグセッションのステータスを取得</td></tr>
+      </tbody>
+    </table>
+
+    <!-- アーキテクチャ -->
+    <h2 id="architecture">アーキテクチャ</h2>
+
+    <h3>システム概要</h3>
+    <pre><code>┌──────────────────┐     MCP (stdio)     ┌──────────────────┐
+│   AI アシスタント  │ ◄─────────────────► │  JVM Debug MCP   │
+│  (Claude など)    │                     │     サーバー       │
+└──────────────────┘                     └────────┬─────────┘
+                                                  │
+                                         JDWP (TCP:5005)
+                                                  │
+                                         ┌────────▼─────────┐
+                                         │   対象 JVM        │
+                                         │  (Java/Kotlin)   │
+                                         └──────────────────┘</code></pre>
+
+    <h3>プロトコルスタック</h3>
+    <p>本サーバーは <strong>JDWP (Java Debug Wire Protocol)</strong> を TCP 上で直接実装しており、JDI (Java Debug Interface) に依存しません。これにより、純粋な Node.js 環境で動作します。</p>
+
+    <table>
+      <thead><tr><th>レイヤー</th><th>技術</th><th>役割</th></tr></thead>
+      <tbody>
+        <tr><td>クライアントインターフェース</td><td>MCP (stdio)</td><td>AI アシスタントとの通信</td></tr>
+        <tr><td>デバッグプロトコル</td><td>JDWP (TCP)</td><td>JVM デバッグ用バイナリプロトコル</td></tr>
+        <tr><td>対象</td><td>JVM (JVMTI エージェント)</td><td>デバッグ対象の Java/Kotlin アプリケーション</td></tr>
+      </tbody>
+    </table>
+
+    <!-- トラブルシューティング -->
+    <h2 id="troubleshooting">トラブルシューティング</h2>
+
+    <h3>接続が拒否される</h3>
+    <p>対象 JVM が JDWP エージェント付きで起動されていて、ポートが一致していることを確認してください：</p>
+    <pre><code>-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005</code></pre>
+
+    <h3>ブレークポイント設定時にクラスが見つからない</h3>
+    <ul>
+      <li>完全修飾クラス名を使用してください（例: <code>MyClass</code> ではなく <code>com.example.MyClass</code>）</li>
+      <li>クラスが JVM にロードされている必要があります。遅延ブレークポイントを使用する場合は、先にクラスのロードをトリガーしてください。</li>
+    </ul>
+
+    <h3>ポートが既に使用中</h3>
+    <p>他のプロセスがポート 5005 を使用している可能性があります。停止するか、別のポートを指定してください：</p>
+    <pre><code>launch({ projectDir: "...", port: 5006 })</code></pre>
+
+    <h3>Gradle デーモンの競合</h3>
+    <div class="callout callout-info">
+      本サーバーは Gradle init script を使用して <code>JavaExec</code> タスクにのみデバッグフラグを注入します。Gradle デーモン自体は影響を受けません。問題が発生した場合は、起動前に <code>./gradlew --stop</code> を実行してください。
+    </div>
+  </main>
+</div>
+
+<footer class="site-footer">
+  <p>JVM Debug MCP &mdash; ISC ライセンス</p>
+</footer>
+
+</body>
+</html>

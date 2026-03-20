@@ -119,7 +119,7 @@ npm run build</code></pre>
       <li>
         <strong>デバッグエージェント付きで起動</strong>
         <pre><code>launch({ projectDir: "/path/to/your/project" })</code></pre>
-        <p>プロジェクトをビルドし、JDWP をポート 5005 で有効にして起動します。</p>
+        <p>プロジェクトをビルドし、JDWP をポート 5005 で有効にして起動します。<code>launch</code> ツールは JDWP ポートが実際に接続可能な状態になったことを確認してから成功を返します（最大 10 秒）。</p>
       </li>
       <li>
         <strong>デバッガを接続</strong>
@@ -170,8 +170,8 @@ connect({ host: "localhost", port: 5005 })</code></pre>
         <tr>
           <td>Maven</td>
           <td><code>pom.xml</code></td>
-          <td><code>spring-boot:run</code> / <code>exec:java</code></td>
-          <td><code>-Dspring-boot.run.jvmArguments</code> / <code>MAVEN_OPTS</code></td>
+          <td><code>exec:java</code>（デフォルト） / <code>spring-boot:run</code></td>
+          <td><code>MAVEN_OPTS</code> / <code>-Dspring-boot.run.jvmArguments</code></td>
         </tr>
       </tbody>
     </table>
@@ -180,7 +180,7 @@ connect({ host: "localhost", port: 5005 })</code></pre>
     <p>Spring Boot プロジェクトは自動的に検出されます。ビルドファイル内の Spring Boot プラグインを確認し、適切な実行タスクを選択します：</p>
     <ul>
       <li><strong>Gradle</strong>: <code>org.springframework.boot</code> プラグインを検出すると <code>bootRun</code> を使用</li>
-      <li><strong>Maven</strong>: <code>spring-boot-maven-plugin</code> を検出すると <code>spring-boot:run</code> を使用</li>
+      <li><strong>Maven</strong>: <code>spring-boot-maven-plugin</code> を検出すると <code>spring-boot:run</code>、<code>exec-maven-plugin</code> を検出すると <code>exec:java</code>、いずれも検出されない場合はデフォルトで <code>exec:java</code> を使用</li>
     </ul>
 
     <div class="callout callout-info">
@@ -280,7 +280,7 @@ inspect_array({ arrayId: "9012", startIndex: 0, length: 10 })</code></pre>
       <tbody>
         <tr><td><code>detect_project</code></td><td>ディレクトリ内のビルドシステム（Gradle/Maven）を検出</td></tr>
         <tr><td><code>build</code></td><td>Gradle または Maven プロジェクトをビルド</td></tr>
-        <tr><td><code>launch</code></td><td>JDWP デバッグエージェント付きでビルド・起動</td></tr>
+        <tr><td><code>launch</code></td><td>JDWP デバッグエージェント付きでビルド・起動。JDWP ポートが接続可能になったことを確認してから成功を返します。</td></tr>
         <tr><td><code>stop</code></td><td>起動したプロセスを停止</td></tr>
         <tr><td><code>process_output</code></td><td>起動したプロセスの標準出力/標準エラーを取得</td></tr>
       </tbody>
@@ -375,6 +375,13 @@ inspect_array({ arrayId: "9012", startIndex: 0, length: 10 })</code></pre>
     <h3>ポートが既に使用中</h3>
     <p>他のプロセスがポート 5005 を使用している可能性があります。停止するか、別のポートを指定してください：</p>
     <pre><code>launch({ projectDir: "...", port: 5006 })</code></pre>
+
+    <h3>launch は成功するが connect が失敗する</h3>
+    <p><code>launch</code> が「JDWP ポートがリッスンしていない」と報告した場合、プロセスは起動したものの JDWP デバッグポートが公開されていません。主な原因：</p>
+    <ul>
+      <li>ビルドシステムのタスクが JDWP 引数を対象 JVM に渡していない（例: <code>exec-maven-plugin</code> のないプレーン Maven プロジェクト）</li>
+      <li>アプリケーションの起動に 10 秒以上かかる場合。この場合は待ってから手動で <code>connect</code> を試してください。</li>
+    </ul>
 
     <h3>Gradle デーモンの競合</h3>
     <div class="callout callout-info">

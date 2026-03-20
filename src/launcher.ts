@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import * as net from "node:net";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -73,7 +74,7 @@ export function detectBuildSystem(projectDir: string): DetectedProject | null {
 }
 
 /** Get the default run task for a build system */
-function getDefaultTask(buildSystem: BuildSystem, projectDir: string): string {
+export function getDefaultTask(buildSystem: BuildSystem, projectDir: string): string {
   if (buildSystem === "gradle" || buildSystem === "gradle-kts") {
     // Check for Spring Boot plugin
     const buildFile = buildSystem === "gradle-kts" ? "build.gradle.kts" : "build.gradle";
@@ -89,7 +90,6 @@ function getDefaultTask(buildSystem: BuildSystem, projectDir: string): string {
   }
 
   if (buildSystem === "maven") {
-    // Check for Spring Boot
     const pomContent = readFileSafe(path.join(projectDir, "pom.xml"));
     if (pomContent.includes("spring-boot-maven-plugin")) {
       return "spring-boot:run";
@@ -97,7 +97,8 @@ function getDefaultTask(buildSystem: BuildSystem, projectDir: string): string {
     if (pomContent.includes("exec-maven-plugin")) {
       return "exec:java";
     }
-    return "spring-boot:run";
+    // Default to exec:java with exec-maven-plugin as the most generic option
+    return "exec:java";
   }
 
   return "run";
@@ -418,9 +419,14 @@ export async function launchWithDebug(opts: LaunchOptions): Promise<{
       outputLines,
     };
 
-    // Wait a bit for process to start, then check if it's still alive
-    // and if JDWP port is listening
-    setTimeout(() => {
+    // Wait for process to start and verify JDWP port is listening
+    const maxAttempts = 20;
+    const intervalMs = 500;
+    let attempts = 0;
+
+    const checkPort = () => {
+      attempts++;
+
       if (proc.exitCode !== null) {
         resolve({
           success: false,
@@ -429,7 +435,13 @@ export async function launchWithDebug(opts: LaunchOptions): Promise<{
           buildSystem: system,
           task,
         });
-      } else {
+        return;
+      }
+
+      const socket = new net.Socket();
+      socket.setTimeout(300);
+      socket.once("connect", () => {
+        socket.destroy();
         resolve({
           success: true,
           message: `Launched: ${cmd} ${args.join(" ")}\nPID: ${proc.pid}\nJDWP port: ${port}\nUse 'connect' tool with port ${port} to start debugging.`,
@@ -437,8 +449,40 @@ export async function launchWithDebug(opts: LaunchOptions): Promise<{
           buildSystem: system,
           task,
         });
-      }
-    }, 3000);
+      });
+      socket.once("error", () => {
+        socket.destroy();
+        if (attempts >= maxAttempts) {
+          resolve({
+            success: false,
+            message: `Process started (PID: ${proc.pid}) but JDWP port ${port} is not listening after ${(maxAttempts * intervalMs) / 1000}s. The application may not have JDWP enabled or is still starting.\nOutput:\n${outputLines.join("\n")}`,
+            port,
+            buildSystem: system,
+            task,
+          });
+        } else {
+          setTimeout(checkPort, intervalMs);
+        }
+      });
+      socket.once("timeout", () => {
+        socket.destroy();
+        if (attempts >= maxAttempts) {
+          resolve({
+            success: false,
+            message: `Process started (PID: ${proc.pid}) but JDWP port ${port} is not listening after ${(maxAttempts * intervalMs) / 1000}s. The application may not have JDWP enabled or is still starting.\nOutput:\n${outputLines.join("\n")}`,
+            port,
+            buildSystem: system,
+            task,
+          });
+        } else {
+          setTimeout(checkPort, intervalMs);
+        }
+      });
+      socket.connect(port, "127.0.0.1");
+    };
+
+    // Initial delay to let the process start
+    setTimeout(checkPort, 1000);
   });
 }
 

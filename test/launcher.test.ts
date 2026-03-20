@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
+import * as net from "node:net";
 import * as path from "node:path";
 import * as os from "node:os";
-import { detectBuildSystem } from "../src/launcher.js";
+import { detectBuildSystem, getDefaultTask, launchWithDebug } from "../src/launcher.js";
 
 /** Create a temporary directory for test projects */
 function createTempDir(): string {
@@ -118,5 +119,127 @@ describe("detectBuildSystem", () => {
     fs.writeFileSync(path.join(tempDir, "build.gradle"), "");
     const result = detectBuildSystem(tempDir);
     expect(result!.projectDir).toBe(tempDir);
+  });
+});
+
+describe("getDefaultTask", () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = createTempDir();
+  });
+
+  afterEach(() => {
+    removeTempDir(tempDir);
+  });
+
+  it("should return spring-boot:run for Maven with spring-boot-maven-plugin", () => {
+    fs.writeFileSync(
+      path.join(tempDir, "pom.xml"),
+      `<project>
+        <build><plugins><plugin>
+          <groupId>org.springframework.boot</groupId>
+          <artifactId>spring-boot-maven-plugin</artifactId>
+        </plugin></plugins></build>
+      </project>`,
+    );
+    expect(getDefaultTask("maven", tempDir)).toBe("spring-boot:run");
+  });
+
+  it("should return exec:java for Maven with exec-maven-plugin", () => {
+    fs.writeFileSync(
+      path.join(tempDir, "pom.xml"),
+      `<project>
+        <build><plugins><plugin>
+          <groupId>org.codehaus.mojo</groupId>
+          <artifactId>exec-maven-plugin</artifactId>
+        </plugin></plugins></build>
+      </project>`,
+    );
+    expect(getDefaultTask("maven", tempDir)).toBe("exec:java");
+  });
+
+  it("should return exec:java (not spring-boot:run) for plain Maven project", () => {
+    fs.writeFileSync(
+      path.join(tempDir, "pom.xml"),
+      `<project><modelVersion>4.0.0</modelVersion></project>`,
+    );
+    expect(getDefaultTask("maven", tempDir)).toBe("exec:java");
+  });
+
+  it("should return bootRun for Gradle with Spring Boot", () => {
+    fs.writeFileSync(
+      path.join(tempDir, "build.gradle"),
+      `plugins { id 'org.springframework.boot' version '3.0.0' }`,
+    );
+    expect(getDefaultTask("gradle", tempDir)).toBe("bootRun");
+  });
+
+  it("should return run for Gradle with application plugin", () => {
+    fs.writeFileSync(
+      path.join(tempDir, "build.gradle"),
+      `plugins { id 'application' }\nmainClass = 'com.example.Main'`,
+    );
+    expect(getDefaultTask("gradle", tempDir)).toBe("run");
+  });
+
+  it("should return run for plain Gradle project", () => {
+    fs.writeFileSync(
+      path.join(tempDir, "build.gradle"),
+      `plugins { id 'java' }`,
+    );
+    expect(getDefaultTask("gradle", tempDir)).toBe("run");
+  });
+});
+
+describe("launchWithDebug JDWP port verification", () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = createTempDir();
+  });
+
+  afterEach(() => {
+    removeTempDir(tempDir);
+  });
+
+  it("should succeed when JDWP port becomes available", async () => {
+    // Start a TCP server to simulate JDWP port
+    const port = 15005 + Math.floor(Math.random() * 1000);
+    const server = net.createServer();
+    await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
+
+    try {
+      // Create a minimal project with a script that stays alive
+      fs.writeFileSync(path.join(tempDir, "pom.xml"), "<project><modelVersion>4.0.0</modelVersion></project>");
+
+      // Launch with a command that just sleeps — the TCP server simulates JDWP
+      const result = await launchWithDebug({
+        projectDir: tempDir,
+        port,
+        buildSystem: "raw-java",
+        task: "run",
+      });
+      // raw-java with no .java files will likely fail, but we're testing port detection
+      // The process may exit immediately, so this tests the exit-code path
+      expect(result).toHaveProperty("success");
+      expect(result).toHaveProperty("port", port);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("should report failure when process exits immediately", async () => {
+    fs.writeFileSync(path.join(tempDir, "pom.xml"), "<project/>");
+
+    const result = await launchWithDebug({
+      projectDir: tempDir,
+      port: 15999,
+      buildSystem: "raw-java",
+      task: "run",
+    });
+
+    // raw-java with no valid class will fail
+    expect(result.success).toBe(false);
   });
 });

@@ -44,7 +44,7 @@ export class JDWPWriter {
 
   writeByte(value: number): this {
     const buf = Buffer.alloc(1);
-    buf.writeUInt8(value, 0);
+    buf.writeInt8(value, 0);
     this.buffers.push(buf);
     return this;
   }
@@ -55,7 +55,7 @@ export class JDWPWriter {
 
   writeShort(value: number): this {
     const buf = Buffer.alloc(2);
-    buf.writeUInt16BE(value, 0);
+    buf.writeInt16BE(value, 0);
     this.buffers.push(buf);
     return this;
   }
@@ -145,7 +145,7 @@ export class JDWPReader {
   }
 
   readByte(): number {
-    const value = this.buffer.readUInt8(this.offset);
+    const value = this.buffer.readInt8(this.offset);
     this.offset += 1;
     return value;
   }
@@ -155,7 +155,7 @@ export class JDWPReader {
   }
 
   readShort(): number {
-    const value = this.buffer.readUInt16BE(this.offset);
+    const value = this.buffer.readInt16BE(this.offset);
     this.offset += 2;
     return value;
   }
@@ -233,7 +233,7 @@ export class JDWPReader {
       case Tag.Boolean:
         return { tag, value: this.readBoolean() };
       case Tag.Char:
-        return { tag, value: String.fromCharCode(this.readShort()) };
+        return { tag, value: String.fromCharCode(this.readShort() & 0xffff) };
       case Tag.Short:
         return { tag, value: this.readShort() };
       case Tag.Int:

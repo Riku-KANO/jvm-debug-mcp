@@ -100,6 +100,41 @@ describe("JDWPReader", () => {
     expect(reader.readByte()).toBe(0x42);
   });
 
+  it("should read negative byte (signed)", () => {
+    const buf = Buffer.alloc(1);
+    buf.writeInt8(-1, 0);
+    const reader = new JDWPReader(buf);
+    expect(reader.readByte()).toBe(-1);
+  });
+
+  it("should read negative byte -128 (min signed byte)", () => {
+    const buf = Buffer.alloc(1);
+    buf.writeInt8(-128, 0);
+    const reader = new JDWPReader(buf);
+    expect(reader.readByte()).toBe(-128);
+  });
+
+  it("should read negative short (signed)", () => {
+    const buf = Buffer.alloc(2);
+    buf.writeInt16BE(-1, 0);
+    const reader = new JDWPReader(buf);
+    expect(reader.readShort()).toBe(-1);
+  });
+
+  it("should read negative short -32768 (min signed short)", () => {
+    const buf = Buffer.alloc(2);
+    buf.writeInt16BE(-32768, 0);
+    const reader = new JDWPReader(buf);
+    expect(reader.readShort()).toBe(-32768);
+  });
+
+  it("should read positive short", () => {
+    const buf = Buffer.alloc(2);
+    buf.writeInt16BE(12345, 0);
+    const reader = new JDWPReader(buf);
+    expect(reader.readShort()).toBe(12345);
+  });
+
   it("should read boolean", () => {
     const buf = Buffer.from([1, 0]);
     const reader = new JDWPReader(buf);
@@ -166,6 +201,34 @@ describe("JDWPReader", () => {
     expect(val.value).toBe(true);
   });
 
+  it("should read negative byte value by tag", () => {
+    const writer = new JDWPWriter();
+    writer.writeByte(-1);
+    const reader = new JDWPReader(writer.toBuffer());
+    const val = reader.readValue(Tag.Byte);
+    expect(val.tag).toBe(Tag.Byte);
+    expect(val.value).toBe(-1);
+  });
+
+  it("should read negative short value by tag", () => {
+    const writer = new JDWPWriter();
+    writer.writeShort(-12345);
+    const reader = new JDWPReader(writer.toBuffer());
+    const val = reader.readValue(Tag.Short);
+    expect(val.tag).toBe(Tag.Short);
+    expect(val.value).toBe(-12345);
+  });
+
+  it("should read char value by tag (unsigned)", () => {
+    const writer = new JDWPWriter();
+    // Char 'A' = 65
+    writer.writeShort(65);
+    const reader = new JDWPReader(writer.toBuffer());
+    const val = reader.readValue(Tag.Char);
+    expect(val.tag).toBe(Tag.Char);
+    expect(val.value).toBe("A");
+  });
+
   it("should read null value by tag", () => {
     const reader = new JDWPReader(Buffer.alloc(0));
     const val = reader.readValue(Tag.Null);
@@ -188,6 +251,25 @@ describe("JDWPReader", () => {
 });
 
 describe("Writer/Reader roundtrip", () => {
+  it("should roundtrip negative byte and short values", () => {
+    const writer = new JDWPWriter();
+    writer.writeByte(-1);
+    writer.writeByte(-128);
+    writer.writeByte(127);
+    writer.writeShort(-1);
+    writer.writeShort(-32768);
+    writer.writeShort(32767);
+
+    const reader = new JDWPReader(writer.toBuffer());
+    expect(reader.readByte()).toBe(-1);
+    expect(reader.readByte()).toBe(-128);
+    expect(reader.readByte()).toBe(127);
+    expect(reader.readShort()).toBe(-1);
+    expect(reader.readShort()).toBe(-32768);
+    expect(reader.readShort()).toBe(32767);
+    expect(reader.remaining).toBe(0);
+  });
+
   it("should roundtrip complex data", () => {
     const sizes = defaultIDSizes;
     const writer = new JDWPWriter(sizes);

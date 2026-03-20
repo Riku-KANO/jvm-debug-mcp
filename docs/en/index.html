@@ -120,7 +120,7 @@ npm run build</code></pre>
       <li>
         <strong>Launch with debug agent</strong>
         <pre><code>launch({ projectDir: "/path/to/your/project" })</code></pre>
-        <p>This builds the project and starts it with JDWP enabled on port 5005.</p>
+        <p>This builds the project and starts it with JDWP enabled on port 5005. The <code>launch</code> tool verifies that the JDWP port is actually accepting connections before reporting success (up to 10 seconds).</p>
       </li>
       <li>
         <strong>Connect the debugger</strong>
@@ -171,8 +171,8 @@ connect({ host: "localhost", port: 5005 })</code></pre>
         <tr>
           <td>Maven</td>
           <td><code>pom.xml</code></td>
-          <td><code>spring-boot:run</code> / <code>exec:java</code></td>
-          <td><code>-Dspring-boot.run.jvmArguments</code> / <code>MAVEN_OPTS</code></td>
+          <td><code>exec:java</code> (default) / <code>spring-boot:run</code></td>
+          <td><code>MAVEN_OPTS</code> / <code>-Dspring-boot.run.jvmArguments</code></td>
         </tr>
       </tbody>
     </table>
@@ -181,7 +181,7 @@ connect({ host: "localhost", port: 5005 })</code></pre>
     <p>Spring Boot projects are automatically detected. The server checks for Spring Boot plugins in your build files and selects the appropriate run task:</p>
     <ul>
       <li><strong>Gradle</strong>: Uses <code>bootRun</code> when <code>org.springframework.boot</code> plugin is detected</li>
-      <li><strong>Maven</strong>: Uses <code>spring-boot:run</code> when <code>spring-boot-maven-plugin</code> is detected</li>
+      <li><strong>Maven</strong>: Uses <code>spring-boot:run</code> when <code>spring-boot-maven-plugin</code> is detected, <code>exec:java</code> when <code>exec-maven-plugin</code> is detected, and defaults to <code>exec:java</code> otherwise</li>
     </ul>
 
     <div class="callout callout-info">
@@ -281,7 +281,7 @@ inspect_array({ arrayId: "9012", startIndex: 0, length: 10 })</code></pre>
       <tbody>
         <tr><td><code>detect_project</code></td><td>Detect build system (Gradle/Maven) in a directory</td></tr>
         <tr><td><code>build</code></td><td>Build a Gradle or Maven project</td></tr>
-        <tr><td><code>launch</code></td><td>Build and launch with JDWP debug agent enabled</td></tr>
+        <tr><td><code>launch</code></td><td>Build and launch with JDWP debug agent enabled. Verifies the JDWP port is connectable before returning success.</td></tr>
         <tr><td><code>stop</code></td><td>Stop the launched process</td></tr>
         <tr><td><code>process_output</code></td><td>Get recent stdout/stderr from the launched process</td></tr>
       </tbody>
@@ -383,6 +383,13 @@ inspect_array({ arrayId: "9012", startIndex: 0, length: 10 })</code></pre>
     <h3>Port already in use</h3>
     <p>Another process may be using port 5005. Either stop it or specify a different port:</p>
     <pre><code>launch({ projectDir: "...", port: 5006 })</code></pre>
+
+    <h3>Launch succeeds but connect fails</h3>
+    <p>If <code>launch</code> reports failure with "JDWP port is not listening", it means the process started but did not expose a JDWP debug port. This typically happens when:</p>
+    <ul>
+      <li>The build system task does not pass JDWP arguments to the target JVM (e.g., running a plain Maven project without <code>exec-maven-plugin</code>)</li>
+      <li>The application takes longer than 10 seconds to start. In this case, try connecting manually with <code>connect</code> after waiting.</li>
+    </ul>
 
     <h3>Gradle daemon conflict</h3>
     <div class="callout callout-info">

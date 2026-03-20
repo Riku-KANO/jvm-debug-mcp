@@ -72,7 +72,7 @@ Any MCP-compatible client can use this server. Set the command to `node` and the
 
 ```
 1. detect_project({ projectDir: "/path/to/project" })
-2. launch({ projectDir: "/path/to/project" })       // builds & starts with JDWP on port 5005
+2. launch({ projectDir: "/path/to/project" })       // builds & starts with JDWP on port 5005, verifies port is connectable
 3. connect({ host: "localhost", port: 5005 })
 4. set_breakpoint({ className: "com.example.MyClass", line: 25 })
 5. get_stack_trace({})
@@ -97,7 +97,7 @@ connect({ host: "localhost", port: 5005 })
 
 | Category        | Tools                                                                                |
 | --------------- | ------------------------------------------------------------------------------------ |
-| **Project**     | `detect_project`, `build`, `launch`, `stop`, `process_output`                        |
+| **Project**     | `detect_project`, `build`, `launch` (with JDWP port verification), `stop`, `process_output` |
 | **Connection**  | `connect`, `disconnect`                                                              |
 | **Breakpoints** | `set_breakpoint`, `remove_breakpoint`, `list_breakpoints`                            |
 | **Execution**   | `resume`, `pause`, `step_over`, `step_into`, `step_out`                              |
@@ -110,7 +110,7 @@ connect({ host: "localhost", port: 5005 })
 | --------------- | ------------------ | ------------------------------- | ------------- |
 | Gradle (Groovy) | `build.gradle`     | `run` / `bootRun`               | Auto-detected |
 | Gradle (Kotlin) | `build.gradle.kts` | `run` / `bootRun`               | Auto-detected |
-| Maven           | `pom.xml`          | `spring-boot:run` / `exec:java` | Auto-detected |
+| Maven           | `pom.xml`          | `exec:java` / `spring-boot:run` | Auto-detected |
 
 ## Development
 

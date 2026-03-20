@@ -131,4 +131,4 @@ The server implements JDWP directly over TCP (no JDI dependency), running in pur
 
 ## License
 
-ISC
+MIT

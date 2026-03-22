@@ -77,6 +77,17 @@ interface PendingRequest {
   reject: (err: Error) => void;
 }
 
+/**
+ * Event kinds that should NOT trigger an automatic VM resume.
+ * When the JVM sends these events with a suspend policy, the VM stays suspended
+ * so the user (or AI assistant) can inspect state and set breakpoints before resuming.
+ */
+const SUSPEND_PRESERVING_EVENTS: ReadonlySet<number> = new Set([
+  EventKind.Breakpoint,
+  EventKind.SingleStep,
+  EventKind.VMStart,
+]);
+
 export class JDWPClient extends EventEmitter {
   private socket: net.Socket | null = null;
   private connected = false;
@@ -100,9 +111,16 @@ export class JDWPClient extends EventEmitter {
   private suspendedThreads = new Set<bigint>();
   // Most recently suspended thread (convenience default)
   private _lastSuspendedThreadId: bigint | null = null;
+  // Whether the VM is currently suspended (e.g. from suspend=y launch or VMStart)
+  private _vmSuspended = false;
 
   get isConnected(): boolean {
     return this.connected && this.handshakeComplete;
+  }
+
+  /** Whether the entire VM is currently suspended (e.g. from suspend=y launch) */
+  get vmSuspended(): boolean {
+    return this._vmSuspended;
   }
 
   /** The most recently suspended thread (from breakpoint or step) */
@@ -180,6 +198,7 @@ export class JDWPClient extends EventEmitter {
       this.breakpoints.clear();
       this.suspendedThreads.clear();
       this._lastSuspendedThreadId = null;
+      this._vmSuspended = false;
     }
   }
 
@@ -245,9 +264,11 @@ export class JDWPClient extends EventEmitter {
       const reader = new JDWPReader(data, this.idSizes);
       const suspendPolicy = reader.readByte();
       const eventCount = reader.readInt();
+      const observedEventKinds: number[] = [];
 
       for (let i = 0; i < eventCount; i++) {
         const eventKind = reader.readByte();
+        observedEventKinds.push(eventKind);
 
         switch (eventKind) {
           case EventKind.VMStart: {
@@ -332,24 +353,18 @@ export class JDWPClient extends EventEmitter {
         }
       }
 
-      // Resume if suspend policy requires
+      // Auto-resume logic: if the VM was suspended by this event, decide whether to keep it
+      // suspended or auto-resume. Events in SUSPEND_PRESERVING_EVENTS (breakpoints, steps,
+      // VMStart) keep the VM suspended so the user can inspect state / set breakpoints.
+      // Internal events (ClassPrepare, ThreadStart, etc.) are auto-resumed.
       if (suspendPolicy === SuspendPolicy.All || suspendPolicy === SuspendPolicy.EventThread) {
-        // Don't auto-resume for breakpoints and steps - user controls that
-        // But resume for class prepare events and other internal events
-        const isUserEvent =
-          data.length > 0 &&
-          (() => {
-            const r = new JDWPReader(data, this.idSizes);
-            r.readByte(); // suspendPolicy
-            const count = r.readInt();
-            if (count > 0) {
-              const kind = r.readByte();
-              return kind === EventKind.Breakpoint || kind === EventKind.SingleStep;
-            }
-            return false;
-          })();
+        const shouldPreserveSuspend = observedEventKinds.some((kind) =>
+          SUSPEND_PRESERVING_EVENTS.has(kind),
+        );
 
-        if (!isUserEvent) {
+        if (shouldPreserveSuspend) {
+          this._vmSuspended = true;
+        } else {
           this.resumeVM().catch(() => {});
         }
       }
@@ -402,6 +417,7 @@ export class JDWPClient extends EventEmitter {
   async suspendVM(): Promise<void> {
     const reply = await this.sendCommand(CommandSet.VirtualMachine, VMCommand.Suspend);
     this.checkError(reply);
+    this._vmSuspended = true;
   }
 
   async resumeVM(): Promise<void> {
@@ -409,6 +425,7 @@ export class JDWPClient extends EventEmitter {
     this.checkError(reply);
     this.suspendedThreads.clear();
     this._lastSuspendedThreadId = null;
+    this._vmSuspended = false;
   }
 
   async getClassesBySignature(

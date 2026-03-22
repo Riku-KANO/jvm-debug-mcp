@@ -239,7 +239,8 @@ server.registerTool(
   "connect",
   {
     description:
-      "Connect to a JVM running with JDWP debug agent. The target JVM must be started with: -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=<port>",
+      "Connect to a JVM running with JDWP debug agent. The target JVM must be started with: -agentlib:jdwp=transport=dt_socket,server=y,address=<port>. " +
+      "If the JVM was launched with suspend=y, it will remain suspended after connect so you can set breakpoints before resuming.",
     inputSchema: {
       host: z.string().default("localhost").describe("Host to connect to"),
       port: z.number().describe("JDWP debug port"),
@@ -252,8 +253,17 @@ server.registerTool(
     try {
       const version = await client.connect(host, port);
       addEvent(`Connected to ${host}:${port}`);
+      const lines = [`Connected to JVM at ${host}:${port}`, version];
+      if (client.vmSuspended) {
+        lines.push(
+          "",
+          "VM is suspended (launched with suspend=y).",
+          "You can set breakpoints now, then use 'resume' to start execution.",
+        );
+        addEvent("VM is suspended (suspend=y) — waiting for breakpoints before resume");
+      }
       return {
-        content: [{ type: "text", text: `Connected to JVM at ${host}:${port}\n${version}` }],
+        content: [{ type: "text", text: lines.join("\n") }],
       };
     } catch (err) {
       return {
@@ -880,9 +890,12 @@ server.registerTool("status", { description: "Get the current debug session stat
   const proc = getCurrentProcess();
   const procAlive = proc !== null && !proc.process.killed && proc.process.exitCode === null;
 
+  const vmSuspended = connected ? client.vmSuspended : false;
+
   const lines = [
     `Launched process: ${proc ? `PID=${String(proc.pid)} (${procAlive ? "running" : "exited"}, ${proc.buildSystem} ${proc.task}, port=${proc.port})` : "none"}`,
     `Debugger connected: ${connected}`,
+    `VM suspended: ${vmSuspended}`,
     `Breakpoints: ${bps.length}`,
     `Suspended threads: ${suspendedThreads.length > 0 ? suspendedThreads.map(String).join(", ") : "none"}`,
     `Last active thread: ${currentThread !== null ? String(currentThread) : "none"}`,

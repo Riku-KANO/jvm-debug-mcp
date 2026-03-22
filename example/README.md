@@ -9,6 +9,7 @@ Sample projects for demonstrating [jvm-debug-mcp](https://github.com/riku-kano/j
 | [spring-boot-kotlin](./spring-boot-kotlin/) | Spring Boot + Kotlin | Gradle (Kotlin DSL) | REST API with greeting service |
 | [spring-boot-java](./spring-boot-java/) | Spring Boot + Java | Gradle (Kotlin DSL) | REST API with task management |
 | [java-cli-gradle](./java-cli-gradle/) | Plain Java | Gradle (Kotlin DSL) | CLI app with number processing |
+| [race-condition-java](./race-condition-java/) | Plain Java | Gradle (Kotlin DSL) | Multi-thread race condition demo |
 
 ## Prerequisites
 

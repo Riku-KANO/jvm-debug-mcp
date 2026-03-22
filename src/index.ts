@@ -288,12 +288,21 @@ server.registerTool(
   "set_breakpoint",
   {
     description:
-      "Set a breakpoint at a specific class and line number. Use fully qualified class name (e.g., com.example.MyClass). " +
+      "Set a breakpoint at a specific class and line number, or at the entry of a method. " +
+      "Use fully qualified class name (e.g., com.example.MyClass). " +
+      "Specify either 'line' (line number) or 'method' (method name) to set the breakpoint location. " +
+      "When 'method' is specified, the breakpoint is set at the first executable line of that method. " +
       "suspendPolicy controls what happens when the breakpoint hits: 'thread' (default) suspends only the hitting thread " +
       "(other threads keep running - ideal for multi-thread debugging), 'all' suspends all threads.",
     inputSchema: {
       className: z.string().describe("Fully qualified class name (e.g., com.example.MyClass)"),
-      line: z.number().describe("Line number to set breakpoint at"),
+      line: z.number().optional().describe("Line number to set breakpoint at"),
+      method: z
+        .string()
+        .optional()
+        .describe(
+          "Method name to set breakpoint at (sets breakpoint at the first line of the method)",
+        ),
       suspendPolicy: z
         .enum(["thread", "all"])
         .default("thread")
@@ -302,20 +311,36 @@ server.registerTool(
         ),
     },
   },
-  async ({ className, line, suspendPolicy }) => {
+  async ({ className, line, method, suspendPolicy }) => {
     if (!client.isConnected) {
       return { content: [{ type: "text", text: "Not connected to JVM." }], isError: true };
     }
+    if (line === undefined && method === undefined) {
+      return {
+        content: [
+          { type: "text", text: "Either 'line' or 'method' must be specified." },
+        ],
+        isError: true,
+      };
+    }
     try {
-      const bp = await client.setBreakpoint(className, line, suspendPolicy);
-      addEvent(
-        `Breakpoint set: ${className}:${line} (id=${bp.requestId}, suspend=${suspendPolicy})`,
-      );
+      let bp;
+      if (method !== undefined) {
+        bp = await client.setBreakpointByMethod(className, method, suspendPolicy);
+        addEvent(
+          `Breakpoint set: ${className}.${method}() (line ${bp.line}, id=${bp.requestId}, suspend=${suspendPolicy})`,
+        );
+      } else {
+        bp = await client.setBreakpoint(className, line!, suspendPolicy);
+        addEvent(
+          `Breakpoint set: ${className}:${line} (id=${bp.requestId}, suspend=${suspendPolicy})`,
+        );
+      }
       return {
         content: [
           {
             type: "text",
-            text: `Breakpoint set at ${className}:${bp.line} (id=${bp.requestId}, suspendPolicy=${suspendPolicy})`,
+            text: `Breakpoint set at ${className}:${bp.line}${method ? ` (method: ${method})` : ""} (id=${bp.requestId}, suspendPolicy=${suspendPolicy})`,
           },
         ],
       };

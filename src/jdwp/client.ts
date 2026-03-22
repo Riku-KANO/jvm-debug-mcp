@@ -1058,6 +1058,45 @@ export class JDWPClient extends EventEmitter {
     return bp;
   }
 
+  async setBreakpointByMethod(
+    className: string,
+    methodName: string,
+    suspendPolicy: BreakpointSuspendPolicy = "thread",
+  ): Promise<BreakpointInfo> {
+    const jniSig = classNameToJNISignature(className);
+
+    const classes = await this.getClassesBySignature(jniSig);
+    let classId: bigint;
+
+    if (classes.length === 0) {
+      classId = await this.waitForClassPrepare(className);
+    } else {
+      classId = classes[0].typeID;
+    }
+
+    const methods = await this.getMethods(classId);
+    const targetMethod = methods.find((m) => m.name === methodName);
+    if (!targetMethod) {
+      const available = methods
+        .filter((m) => !m.name.startsWith("<") || m.name === "<init>")
+        .map((m) => m.name);
+      throw new Error(
+        `Method '${methodName}' not found in class ${className}. Available methods: ${available.join(", ")}`,
+      );
+    }
+
+    // Get the first executable line of the method
+    const lineTable = await this.getLineTable(classId, targetMethod.methodID);
+    if (lineTable.lines.length === 0) {
+      throw new Error(
+        `No line information for method '${methodName}' in class ${className}. Make sure the class is compiled with debug info.`,
+      );
+    }
+
+    const firstLine = lineTable.lines[0];
+    return this.setBreakpoint(className, firstLine.lineNumber, suspendPolicy);
+  }
+
   private async waitForClassPrepare(className: string): Promise<bigint> {
     // Set up a ClassPrepare event request with ClassMatch modifier
     const writer = new JDWPWriter(this.idSizes);

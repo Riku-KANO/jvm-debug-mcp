@@ -25,10 +25,10 @@ Enables AI assistants (Claude, etc.) to set breakpoints, step through code, insp
 ```bash
 git clone https://github.com/Riku-KANO/jvm-debug-mcp.git
 cd jvm-debug-mcp
-npm install
+pnpm install
 ```
 
-`npm install` automatically runs the build via the `prepare` script.
+`pnpm install` automatically runs the build via the `prepare` script.
 
 ## MCP Client Configuration
 
@@ -115,10 +115,10 @@ connect({ host: "localhost", port: 5005 })
 ## Development
 
 ```bash
-npm run check    # TypeScript + ESLint + Prettier + Vitest
-npm run lint     # ESLint only
-npm run test     # Vitest only
-npm run build    # TypeScript compile
+pnpm run check    # TypeScript + ESLint + Prettier + Vitest
+pnpm run lint     # ESLint only
+pnpm run test     # Vitest only
+pnpm run build    # TypeScript compile
 ```
 
 ## Architecture

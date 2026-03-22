@@ -390,7 +390,12 @@ export class JDWPClient extends EventEmitter {
         );
 
         if (shouldPreserveSuspend) {
-          this.threadState.vmSuspended = true;
+          // Only mark VM-wide suspend when SuspendPolicy.All is used (e.g. VMStart with suspend=y).
+          // SuspendPolicy.EventThread (default for breakpoints/steps) only suspends one thread,
+          // so the VM as a whole is not suspended.
+          if (suspendPolicy === SuspendPolicy.All) {
+            this.threadState.vmSuspended = true;
+          }
         } else {
           this.resumeVM().catch(() => {});
         }

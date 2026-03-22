@@ -66,6 +66,24 @@ function buildVMStartData(requestId: number, threadId: bigint): Buffer {
 }
 
 /**
+ * Build the data portion for a Breakpoint event (requestId + threadID + location).
+ */
+function buildBreakpointData(
+  requestId: number,
+  threadId: bigint,
+  typeTag: number,
+  classID: bigint,
+  methodID: bigint,
+  index: bigint,
+): Buffer {
+  const writer = new JDWPWriter(defaultIDSizes);
+  writer.writeInt(requestId);
+  writer.writeObjectID(threadId);
+  writer.writeLocation(typeTag, classID, methodID, index);
+  return writer.toBuffer();
+}
+
+/**
  * Build the data portion for a ClassPrepare event.
  */
 function buildClassPrepareData(
@@ -295,5 +313,46 @@ describe("JDWPClient event handling", () => {
     // Now resume
     await client.resumeVM();
     expect(client.vmSuspended).toBe(false);
+  });
+
+  it("should NOT set vmSuspended for Breakpoint with SuspendPolicy.EventThread", async () => {
+    await client.connect("127.0.0.1", serverPort);
+    commandsSent = [];
+
+    // Build a Breakpoint event with SuspendPolicy.EventThread (default for breakpoints)
+    const bpData = buildBreakpointData(1, 42n, 1, 100n, 200n, 0n);
+    const eventPacket = buildEventPacket(SuspendPolicy.EventThread, [
+      { kind: EventKind.Breakpoint, data: bpData },
+    ]);
+    serverSocket!.write(eventPacket);
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Should NOT auto-resume (breakpoint is a suspend-preserving event)
+    const resumeCommands = commandsSent.filter((c) => c.commandSet === 1 && c.command === 9);
+    expect(resumeCommands).toHaveLength(0);
+
+    // vmSuspended should be false — only the hitting thread is suspended, not the whole VM
+    expect(client.vmSuspended).toBe(false);
+
+    // But the thread should be tracked as suspended
+    expect(client.allSuspendedThreadIds).toContain(42n);
+  });
+
+  it("should set vmSuspended for Breakpoint with SuspendPolicy.All", async () => {
+    await client.connect("127.0.0.1", serverPort);
+    commandsSent = [];
+
+    const bpData = buildBreakpointData(1, 42n, 1, 100n, 200n, 0n);
+    const eventPacket = buildEventPacket(SuspendPolicy.All, [
+      { kind: EventKind.Breakpoint, data: bpData },
+    ]);
+    serverSocket!.write(eventPacket);
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // vmSuspended should be true — SuspendPolicy.All means entire VM is paused
+    expect(client.vmSuspended).toBe(true);
+    expect(client.allSuspendedThreadIds).toContain(42n);
   });
 });

@@ -86,6 +86,7 @@ const SUSPEND_PRESERVING_EVENTS: ReadonlySet<number> = new Set([
   EventKind.Breakpoint,
   EventKind.SingleStep,
   EventKind.VMStart,
+  EventKind.ClassPrepare, // Keep VM suspended so breakpoints can be set before execution continues
 ]);
 
 export class JDWPClient extends EventEmitter {
@@ -1104,7 +1105,7 @@ export class JDWPClient extends EventEmitter {
       );
     }
 
-    return this.registerBreakpoint(
+    const bp = await this.registerBreakpoint(
       className,
       bestLine,
       suspendPolicy,
@@ -1113,6 +1114,13 @@ export class JDWPClient extends EventEmitter {
       bestMethod.methodID,
       bestCodeIndex,
     );
+
+    // Resume VM now that breakpoint is in place (it may have been suspended by ClassPrepare)
+    if (this.threadState.vmSuspended) {
+      await this.resumeVM();
+    }
+
+    return bp;
   }
 
   async setBreakpointByMethod(
@@ -1141,7 +1149,7 @@ export class JDWPClient extends EventEmitter {
     }
 
     const firstLine = lineTable.lines[0];
-    return this.registerBreakpoint(
+    const bp = await this.registerBreakpoint(
       className,
       firstLine.lineNumber,
       suspendPolicy,
@@ -1150,6 +1158,13 @@ export class JDWPClient extends EventEmitter {
       targetMethod.methodID,
       firstLine.lineCodeIndex,
     );
+
+    // Resume VM now that breakpoint is in place (it may have been suspended by ClassPrepare)
+    if (this.threadState.vmSuspended) {
+      await this.resumeVM();
+    }
+
+    return bp;
   }
 
   private async waitForClassPrepare(className: string): Promise<bigint> {
@@ -1165,6 +1180,12 @@ export class JDWPClient extends EventEmitter {
       },
       (r) => r.readInt(),
     );
+
+    // Resume VM so the class can actually load.
+    // ClassPrepare uses SuspendPolicy.All, so VM will re-suspend when the class loads.
+    if (this.threadState.vmSuspended) {
+      await this.resumeVM();
+    }
 
     return await new Promise<bigint>((resolve, reject) => {
       const timeout = setTimeout(() => {

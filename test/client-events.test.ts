@@ -258,7 +258,7 @@ describe("JDWPClient event handling", () => {
     expect(client.vmSuspended).toBe(true);
   });
 
-  it("should auto-resume on ClassPrepare event", async () => {
+  it("should keep VM suspended on ClassPrepare event", async () => {
     await client.connect("127.0.0.1", serverPort);
     commandsSent = [];
 
@@ -271,12 +271,13 @@ describe("JDWPClient event handling", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    // The client SHOULD have sent a Resume command
+    // The client should NOT have sent a Resume command (ClassPrepare preserves suspend
+    // so breakpoints can be set before execution continues)
     const resumeCommands = commandsSent.filter((c) => c.commandSet === 1 && c.command === 9);
-    expect(resumeCommands.length).toBeGreaterThan(0);
+    expect(resumeCommands).toHaveLength(0);
 
-    // vmSuspended should be false
-    expect(client.vmSuspended).toBe(false);
+    // vmSuspended should be true
+    expect(client.vmSuspended).toBe(true);
   });
 
   it("should emit vmstart event on VMStart", async () => {

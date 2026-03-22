@@ -70,6 +70,60 @@ function resolveThreadId(threadId: string | undefined): bigint | null {
   return client.currentThreadId;
 }
 
+// --- Shared tool response helpers ---
+
+type ToolResult = { content: [{ type: "text"; text: string }]; isError?: boolean };
+
+function toolResult(text: string, isError?: boolean): ToolResult {
+  return { content: [{ type: "text", text }], ...(isError ? { isError } : {}) };
+}
+
+function formatError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Wraps an async tool handler that requires a connected JVM.
+ * Handles the common `isConnected` guard and try/catch error formatting.
+ */
+function connectedHandler<T>(
+  fn: (args: T) => Promise<ToolResult>,
+): (args: T) => Promise<ToolResult> {
+  return async (args: T) => {
+    if (!client.isConnected) {
+      return toolResult("Not connected to JVM.", true);
+    }
+    try {
+      return await fn(args);
+    } catch (err) {
+      return toolResult(`Failed: ${formatError(err)}`, true);
+    }
+  };
+}
+
+/**
+ * Creates a step tool handler (step over/into/out share identical logic).
+ */
+function stepHandler(
+  direction: string,
+  stepFn: (threadId: bigint) => Promise<void>,
+): (args: { threadId?: string }) => Promise<ToolResult> {
+  return connectedHandler(async ({ threadId }: { threadId?: string }) => {
+    const tid = resolveThreadId(threadId);
+    if (tid === null) {
+      return toolResult(
+        "No suspended thread. Hit a breakpoint first or specify a thread ID.",
+        true,
+      );
+    }
+    await stepFn(tid);
+    const others = client.allSuspendedThreadIds.filter((id) => id !== tid);
+    const suffix =
+      others.length > 0 ? `\nOther suspended threads: ${others.map(String).join(", ")}` : "";
+    return toolResult(`Stepping ${direction} thread ${tid}...${suffix}`);
+  });
+}
+
 // --- Tool: detect_project ---
 server.registerTool(
   "detect_project",
@@ -83,14 +137,9 @@ server.registerTool(
   ({ projectDir }) => {
     const detected = detectBuildSystem(projectDir);
     if (!detected) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `No build system detected in ${projectDir}.\nLooked for: build.gradle, build.gradle.kts, pom.xml`,
-          },
-        ],
-      };
+      return toolResult(
+        `No build system detected in ${projectDir}.\nLooked for: build.gradle, build.gradle.kts, pom.xml`,
+      );
     }
     const lines = [
       `Build system: ${detected.buildSystem}`,
@@ -98,9 +147,7 @@ server.registerTool(
       `Build files: ${detected.buildFiles.join(", ")}`,
       `Has wrapper: ${detected.hasWrapper}`,
     ];
-    return {
-      content: [{ type: "text", text: lines.join("\n") }],
-    };
+    return toolResult(lines.join("\n"));
   },
 );
 
@@ -121,17 +168,12 @@ server.registerTool(
     addEvent(`Building project: ${projectDir}`);
     const result = await buildProject(projectDir, buildSystem);
     addEvent(`Build ${result.success ? "succeeded" : "failed"}: ${result.buildSystem}`);
-    return {
-      content: [
-        {
-          type: "text",
-          text: result.success
-            ? `Build successful (${result.buildSystem})${result.output ? `\n${result.output}` : ""}`
-            : `Build failed (${result.buildSystem}):\n${result.output}`,
-        },
-      ],
-      isError: !result.success,
-    };
+    return toolResult(
+      result.success
+        ? `Build successful (${result.buildSystem})${result.output ? `\n${result.output}` : ""}`
+        : `Build failed (${result.buildSystem}):\n${result.output}`,
+      !result.success || undefined,
+    );
   },
 );
 
@@ -180,10 +222,7 @@ server.registerTool(
     addEvent(
       `Launch ${result.success ? "succeeded" : "failed"}: ${result.buildSystem} ${result.task}`,
     );
-    return {
-      content: [{ type: "text", text: result.message }],
-      isError: !result.success,
-    };
+    return toolResult(result.message, !result.success || undefined);
   },
 );
 
@@ -204,7 +243,7 @@ server.registerTool(
         addEvent("Debugger disconnected");
       }
     }
-    return { content: [{ type: "text", text: result.message }] };
+    return toolResult(result.message);
   },
 );
 
@@ -220,17 +259,15 @@ server.registerTool(
   ({ lines: lineCount }) => {
     const proc = getCurrentProcess();
     if (!proc) {
-      return { content: [{ type: "text", text: "No launched process." }] };
+      return toolResult("No launched process.");
     }
     const output = getProcessOutput(lineCount);
     if (output.length === 0) {
-      return { content: [{ type: "text", text: "No output yet." }] };
+      return toolResult("No output yet.");
     }
     const alive = !proc.process.killed && proc.process.exitCode === null;
     const header = `Process (PID=${String(proc.pid)}, ${alive ? "running" : "exited"}, ${proc.buildSystem} ${proc.task}):`;
-    return {
-      content: [{ type: "text", text: `${header}\n${output.join("\n")}` }],
-    };
+    return toolResult(`${header}\n${output.join("\n")}`);
   },
 );
 
@@ -248,7 +285,7 @@ server.registerTool(
   },
   async ({ host, port }) => {
     if (client.isConnected) {
-      return { content: [{ type: "text", text: "Already connected. Use 'disconnect' first." }] };
+      return toolResult("Already connected. Use 'disconnect' first.");
     }
     try {
       const version = await client.connect(host, port);
@@ -262,19 +299,9 @@ server.registerTool(
         );
         addEvent("VM is suspended (suspend=y) — waiting for breakpoints before resume");
       }
-      return {
-        content: [{ type: "text", text: lines.join("\n") }],
-      };
+      return toolResult(lines.join("\n"));
     } catch (err) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Failed to connect: ${err instanceof Error ? err.message : String(err)}`,
-          },
-        ],
-        isError: true,
-      };
+      return toolResult(`Failed to connect: ${formatError(err)}`, true);
     }
   },
 );
@@ -285,11 +312,11 @@ server.registerTool(
   { description: "Disconnect from the JVM debug session" },
   async () => {
     if (!client.isConnected) {
-      return { content: [{ type: "text", text: "Not connected." }] };
+      return toolResult("Not connected.");
     }
     await client.disconnect();
     addEvent("Disconnected");
-    return { content: [{ type: "text", text: "Disconnected from JVM." }] };
+    return toolResult("Disconnected from JVM.");
   },
 );
 
@@ -323,15 +350,10 @@ server.registerTool(
   },
   async ({ className, line, method, suspendPolicy }) => {
     if (!client.isConnected) {
-      return { content: [{ type: "text", text: "Not connected to JVM." }], isError: true };
+      return toolResult("Not connected to JVM.", true);
     }
     if (line === undefined && method === undefined) {
-      return {
-        content: [
-          { type: "text", text: "Either 'line' or 'method' must be specified." },
-        ],
-        isError: true,
-      };
+      return toolResult("Either 'line' or 'method' must be specified.", true);
     }
     try {
       let bp;
@@ -346,24 +368,11 @@ server.registerTool(
           `Breakpoint set: ${className}:${line} (id=${bp.requestId}, suspend=${suspendPolicy})`,
         );
       }
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Breakpoint set at ${className}:${bp.line}${method ? ` (method: ${method})` : ""} (id=${bp.requestId}, suspendPolicy=${suspendPolicy})`,
-          },
-        ],
-      };
+      return toolResult(
+        `Breakpoint set at ${className}:${bp.line}${method ? ` (method: ${method})` : ""} (id=${bp.requestId}, suspendPolicy=${suspendPolicy})`,
+      );
     } catch (err) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Failed to set breakpoint: ${err instanceof Error ? err.message : String(err)}`,
-          },
-        ],
-        isError: true,
-      };
+      return toolResult(`Failed to set breakpoint: ${formatError(err)}`, true);
     }
   },
 );
@@ -377,43 +386,26 @@ server.registerTool(
       breakpointId: z.number().describe("Breakpoint request ID to remove"),
     },
   },
-  async ({ breakpointId }) => {
-    if (!client.isConnected) {
-      return { content: [{ type: "text", text: "Not connected to JVM." }], isError: true };
-    }
-    try {
-      await client.removeBreakpoint(breakpointId);
-      addEvent(`Breakpoint removed: id=${breakpointId}`);
-      return { content: [{ type: "text", text: `Breakpoint ${breakpointId} removed.` }] };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Failed to remove breakpoint: ${err instanceof Error ? err.message : String(err)}`,
-          },
-        ],
-        isError: true,
-      };
-    }
-  },
+  connectedHandler(async ({ breakpointId }) => {
+    await client.removeBreakpoint(breakpointId);
+    addEvent(`Breakpoint removed: id=${breakpointId}`);
+    return toolResult(`Breakpoint ${breakpointId} removed.`);
+  }),
 );
 
 // --- Tool: list_breakpoints ---
 server.registerTool("list_breakpoints", { description: "List all active breakpoints" }, () => {
   if (!client.isConnected) {
-    return { content: [{ type: "text", text: "Not connected to JVM." }], isError: true };
+    return toolResult("Not connected to JVM.", true);
   }
   const bps = client.getBreakpoints();
   if (bps.length === 0) {
-    return { content: [{ type: "text", text: "No breakpoints set." }] };
+    return toolResult("No breakpoints set.");
   }
   const lines = bps.map(
     (bp) => `  [${bp.requestId}] ${bp.className}:${bp.line} (suspend=${bp.suspendPolicy})`,
   );
-  return {
-    content: [{ type: "text", text: `Active breakpoints:\n${lines.join("\n")}` }],
-  };
+  return toolResult(`Active breakpoints:\n${lines.join("\n")}`);
 });
 
 // --- Tool: resume ---
@@ -429,64 +421,34 @@ server.registerTool(
         .describe("Thread ID to resume (decimal string). If omitted, resumes ALL threads."),
     },
   },
-  async ({ threadId }) => {
-    if (!client.isConnected) {
-      return { content: [{ type: "text", text: "Not connected to JVM." }], isError: true };
+  connectedHandler(async ({ threadId }) => {
+    if (threadId) {
+      const tid = BigInt(threadId);
+      await client.resumeThread(tid);
+      addEvent(`Thread ${tid} resumed`);
+      const remaining = client.allSuspendedThreadIds;
+      const suffix =
+        remaining.length > 0
+          ? `\nStill suspended: ${remaining.map((id) => String(id)).join(", ")}`
+          : "\nNo other suspended threads.";
+      return toolResult(`Thread ${tid} resumed.${suffix}`);
+    } else {
+      await client.resumeVM();
+      addEvent("VM resumed (all threads)");
+      return toolResult("All threads resumed.");
     }
-    try {
-      if (threadId) {
-        const tid = BigInt(threadId);
-        await client.resumeThread(tid);
-        addEvent(`Thread ${tid} resumed`);
-        const remaining = client.allSuspendedThreadIds;
-        const suffix =
-          remaining.length > 0
-            ? `\nStill suspended: ${remaining.map((id) => String(id)).join(", ")}`
-            : "\nNo other suspended threads.";
-        return { content: [{ type: "text", text: `Thread ${tid} resumed.${suffix}` }] };
-      } else {
-        await client.resumeVM();
-        addEvent("VM resumed (all threads)");
-        return { content: [{ type: "text", text: "All threads resumed." }] };
-      }
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Failed to resume: ${err instanceof Error ? err.message : String(err)}`,
-          },
-        ],
-        isError: true,
-      };
-    }
-  },
+  }),
 );
 
 // --- Tool: pause ---
 server.registerTool(
   "pause",
   { description: "Suspend (pause) all threads in the JVM" },
-  async () => {
-    if (!client.isConnected) {
-      return { content: [{ type: "text", text: "Not connected to JVM." }], isError: true };
-    }
-    try {
-      await client.suspendVM();
-      addEvent("VM suspended");
-      return { content: [{ type: "text", text: "VM suspended. All threads paused." }] };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Failed to suspend: ${err instanceof Error ? err.message : String(err)}`,
-          },
-        ],
-        isError: true,
-      };
-    }
-  },
+  connectedHandler(async () => {
+    await client.suspendVM();
+    addEvent("VM suspended");
+    return toolResult("VM suspended. All threads paused.");
+  }),
 );
 
 // --- Tool: step_over ---
@@ -504,40 +466,7 @@ server.registerTool(
         ),
     },
   },
-  async ({ threadId }) => {
-    if (!client.isConnected) {
-      return { content: [{ type: "text", text: "Not connected to JVM." }], isError: true };
-    }
-    const tid = resolveThreadId(threadId);
-    if (tid === null) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: "No suspended thread. Hit a breakpoint first or specify a thread ID.",
-          },
-        ],
-        isError: true,
-      };
-    }
-    try {
-      await client.stepOver(tid);
-      const others = client.allSuspendedThreadIds.filter((id) => id !== tid);
-      const suffix =
-        others.length > 0 ? `\nOther suspended threads: ${others.map(String).join(", ")}` : "";
-      return { content: [{ type: "text", text: `Stepping over thread ${tid}...${suffix}` }] };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Step failed: ${err instanceof Error ? err.message : String(err)}`,
-          },
-        ],
-        isError: true,
-      };
-    }
-  },
+  stepHandler("over", (tid) => client.stepOver(tid)),
 );
 
 // --- Tool: step_into ---
@@ -554,32 +483,7 @@ server.registerTool(
         ),
     },
   },
-  async ({ threadId }) => {
-    if (!client.isConnected) {
-      return { content: [{ type: "text", text: "Not connected to JVM." }], isError: true };
-    }
-    const tid = resolveThreadId(threadId);
-    if (tid === null) {
-      return { content: [{ type: "text", text: "No suspended thread." }], isError: true };
-    }
-    try {
-      await client.stepInto(tid);
-      const others = client.allSuspendedThreadIds.filter((id) => id !== tid);
-      const suffix =
-        others.length > 0 ? `\nOther suspended threads: ${others.map(String).join(", ")}` : "";
-      return { content: [{ type: "text", text: `Stepping into thread ${tid}...${suffix}` }] };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Step failed: ${err instanceof Error ? err.message : String(err)}`,
-          },
-        ],
-        isError: true,
-      };
-    }
-  },
+  stepHandler("into", (tid) => client.stepInto(tid)),
 );
 
 // --- Tool: step_out ---
@@ -596,32 +500,7 @@ server.registerTool(
         ),
     },
   },
-  async ({ threadId }) => {
-    if (!client.isConnected) {
-      return { content: [{ type: "text", text: "Not connected to JVM." }], isError: true };
-    }
-    const tid = resolveThreadId(threadId);
-    if (tid === null) {
-      return { content: [{ type: "text", text: "No suspended thread." }], isError: true };
-    }
-    try {
-      await client.stepOut(tid);
-      const others = client.allSuspendedThreadIds.filter((id) => id !== tid);
-      const suffix =
-        others.length > 0 ? `\nOther suspended threads: ${others.map(String).join(", ")}` : "";
-      return { content: [{ type: "text", text: `Stepping out of thread ${tid}...${suffix}` }] };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Step failed: ${err instanceof Error ? err.message : String(err)}`,
-          },
-        ],
-        isError: true,
-      };
-    }
-  },
+  stepHandler("out of", (tid) => client.stepOut(tid)),
 );
 
 // --- Tool: get_stack_trace ---
@@ -639,41 +518,24 @@ server.registerTool(
       maxFrames: z.number().default(20).describe("Maximum number of frames to return"),
     },
   },
-  async ({ threadId, maxFrames }) => {
-    if (!client.isConnected) {
-      return { content: [{ type: "text", text: "Not connected to JVM." }], isError: true };
-    }
+  connectedHandler(async ({ threadId, maxFrames }) => {
     const tid = resolveThreadId(threadId);
     if (tid === null) {
-      return { content: [{ type: "text", text: "No suspended thread." }], isError: true };
+      return toolResult("No suspended thread.", true);
     }
-    try {
-      const frames = await client.getFrames(tid, 0, maxFrames);
-      if (frames.length === 0) {
-        return { content: [{ type: "text", text: "No stack frames." }] };
-      }
-      const lines = frames.map((f, i) => {
-        const cls = f.className ?? "<unknown>";
-        const method = f.methodName ?? "<unknown>";
-        const line = f.lineNumber !== undefined ? `:${f.lineNumber}` : "";
-        const marker = i === 0 ? " <-- current" : "";
-        return `  #${i} ${cls}.${method}(${line})${marker}`;
-      });
-      return {
-        content: [{ type: "text", text: `Stack trace (thread=${tid}):\n${lines.join("\n")}` }],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Failed to get stack trace: ${err instanceof Error ? err.message : String(err)}`,
-          },
-        ],
-        isError: true,
-      };
+    const frames = await client.getFrames(tid, 0, maxFrames);
+    if (frames.length === 0) {
+      return toolResult("No stack frames.");
     }
-  },
+    const lines = frames.map((f, i) => {
+      const cls = f.className ?? "<unknown>";
+      const method = f.methodName ?? "<unknown>";
+      const line = f.lineNumber !== undefined ? `:${f.lineNumber}` : "";
+      const marker = i === 0 ? " <-- current" : "";
+      return `  #${i} ${cls}.${method}(${line})${marker}`;
+    });
+    return toolResult(`Stack trace (thread=${tid}):\n${lines.join("\n")}`);
+  }),
 );
 
 // --- Tool: get_variables ---
@@ -692,70 +554,33 @@ server.registerTool(
       frameIndex: z.number().default(0).describe("Frame index (0 = top/current frame)"),
     },
   },
-  async ({ threadId, frameIndex }) => {
-    if (!client.isConnected) {
-      return { content: [{ type: "text", text: "Not connected to JVM." }], isError: true };
-    }
+  connectedHandler(async ({ threadId, frameIndex }) => {
     const tid = resolveThreadId(threadId);
     if (tid === null) {
-      return { content: [{ type: "text", text: "No suspended thread." }], isError: true };
+      return toolResult("No suspended thread.", true);
     }
-    try {
-      const frames = await client.getFrames(tid, 0, frameIndex + 1);
-      if (frames.length <= frameIndex) {
-        return {
-          content: [{ type: "text", text: `Frame index ${frameIndex} out of range.` }],
-          isError: true,
-        };
-      }
-      const frame = frames[frameIndex];
-      const variables = await client.getFrameVariables(tid, frame.frameId, frame.location);
-
-      if (variables.length === 0) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `No local variables visible at ${frame.className}.${frame.methodName}:${frame.lineNumber}\n(Class may be compiled without debug info)`,
-            },
-          ],
-        };
-      }
-
-      const lines = variables.map((v) => {
-        const sig = simplifySignature(v.signature);
-        let valueStr: string;
-
-        if (v.stringValue !== undefined) {
-          valueStr = `"${v.stringValue}"`;
-        } else {
-          valueStr = formatValue(v.tag, v.value);
-        }
-
-        return `  ${sig} ${v.name} = ${valueStr}`;
-      });
-
-      const loc = `${frame.className}.${frame.methodName}:${frame.lineNumber}`;
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Variables at ${loc} (frame #${frameIndex}):\n${lines.join("\n")}`,
-          },
-        ],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Failed to get variables: ${err instanceof Error ? err.message : String(err)}`,
-          },
-        ],
-        isError: true,
-      };
+    const frames = await client.getFrames(tid, 0, frameIndex + 1);
+    if (frames.length <= frameIndex) {
+      return toolResult(`Frame index ${frameIndex} out of range.`, true);
     }
-  },
+    const frame = frames[frameIndex];
+    const variables = await client.getFrameVariables(tid, frame.frameId, frame.location);
+
+    if (variables.length === 0) {
+      return toolResult(
+        `No local variables visible at ${frame.className}.${frame.methodName}:${frame.lineNumber}\n(Class may be compiled without debug info)`,
+      );
+    }
+
+    const lines = variables.map((v) => {
+      const sig = simplifySignature(v.signature);
+      const valueStr = v.stringValue !== undefined ? `"${v.stringValue}"` : formatValue(v.tag, v.value);
+      return `  ${sig} ${v.name} = ${valueStr}`;
+    });
+
+    const loc = `${frame.className}.${frame.methodName}:${frame.lineNumber}`;
+    return toolResult(`Variables at ${loc} (frame #${frameIndex}):\n${lines.join("\n")}`);
+  }),
 );
 
 // --- Tool: inspect_object ---
@@ -768,35 +593,18 @@ server.registerTool(
       objectId: z.string().describe("Object ID (decimal string, from variable inspection)"),
     },
   },
-  async ({ objectId }) => {
-    if (!client.isConnected) {
-      return { content: [{ type: "text", text: "Not connected to JVM." }], isError: true };
+  connectedHandler(async ({ objectId }) => {
+    const oid = BigInt(objectId);
+    const fields = await client.getObjectFields(oid);
+    if (fields.length === 0) {
+      return toolResult("No fields found.");
     }
-    try {
-      const oid = BigInt(objectId);
-      const fields = await client.getObjectFields(oid);
-      if (fields.length === 0) {
-        return { content: [{ type: "text", text: "No fields found." }] };
-      }
-      const lines = fields.map((f) => {
-        const sig = simplifySignature(f.signature);
-        return `  ${sig} ${f.name} = ${f.value}`;
-      });
-      return {
-        content: [{ type: "text", text: `Object@${objectId} fields:\n${lines.join("\n")}` }],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Failed to inspect object: ${err instanceof Error ? err.message : String(err)}`,
-          },
-        ],
-        isError: true,
-      };
-    }
-  },
+    const lines = fields.map((f) => {
+      const sig = simplifySignature(f.signature);
+      return `  ${sig} ${f.name} = ${f.value}`;
+    });
+    return toolResult(`Object@${objectId} fields:\n${lines.join("\n")}`);
+  }),
 );
 
 // --- Tool: inspect_array ---
@@ -810,60 +618,28 @@ server.registerTool(
       length: z.number().optional().describe("Number of elements to read (default: up to 100)"),
     },
   },
-  async ({ arrayId, startIndex, length }) => {
-    if (!client.isConnected) {
-      return { content: [{ type: "text", text: "Not connected to JVM." }], isError: true };
-    }
-    try {
-      const result = await client.getArrayValues(BigInt(arrayId), startIndex, length);
-      return { content: [{ type: "text", text: `Array@${arrayId}: ${result}` }] };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Failed to inspect array: ${err instanceof Error ? err.message : String(err)}`,
-          },
-        ],
-        isError: true,
-      };
-    }
-  },
+  connectedHandler(async ({ arrayId, startIndex, length }) => {
+    const result = await client.getArrayValues(BigInt(arrayId), startIndex, length);
+    return toolResult(`Array@${arrayId}: ${result}`);
+  }),
 );
 
 // --- Tool: get_threads ---
 server.registerTool(
   "get_threads",
   { description: "List all threads in the JVM with their status" },
-  async () => {
-    if (!client.isConnected) {
-      return { content: [{ type: "text", text: "Not connected to JVM." }], isError: true };
-    }
-    try {
-      const threads = await client.getAllThreads();
-      const suspendedIds = new Set(client.allSuspendedThreadIds);
-      const lines = threads.map((t) => {
-        const statusName = getThreadStatusName(t.status);
-        const suspended = t.suspendStatus === 1 ? " [SUSPENDED]" : "";
-        const atBreakpoint = suspendedIds.has(t.id) ? " *** BREAKPOINT/STEP ***" : "";
-        const current = t.id === client.currentThreadId ? " <-- current" : "";
-        return `  [${t.id}] ${t.name} (${statusName})${suspended}${atBreakpoint}${current}`;
-      });
-      return {
-        content: [{ type: "text", text: `Threads (${threads.length}):\n${lines.join("\n")}` }],
-      };
-    } catch (err) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Failed to get threads: ${err instanceof Error ? err.message : String(err)}`,
-          },
-        ],
-        isError: true,
-      };
-    }
-  },
+  connectedHandler(async () => {
+    const threads = await client.getAllThreads();
+    const suspendedIds = new Set(client.allSuspendedThreadIds);
+    const lines = threads.map((t) => {
+      const statusName = getThreadStatusName(t.status);
+      const suspended = t.suspendStatus === 1 ? " [SUSPENDED]" : "";
+      const atBreakpoint = suspendedIds.has(t.id) ? " *** BREAKPOINT/STEP ***" : "";
+      const current = t.id === client.currentThreadId ? " <-- current" : "";
+      return `  [${t.id}] ${t.name} (${statusName})${suspended}${atBreakpoint}${current}`;
+    });
+    return toolResult(`Threads (${threads.length}):\n${lines.join("\n")}`);
+  }),
 );
 
 // --- Tool: get_events ---
@@ -872,11 +648,9 @@ server.registerTool(
   { description: "Get the recent debug event log (breakpoint hits, steps, etc.)" },
   () => {
     if (eventLog.length === 0) {
-      return { content: [{ type: "text", text: "No events recorded." }] };
+      return toolResult("No events recorded.");
     }
-    return {
-      content: [{ type: "text", text: `Recent events:\n${eventLog.join("\n")}` }],
-    };
+    return toolResult(`Recent events:\n${eventLog.join("\n")}`);
   },
 );
 
@@ -913,7 +687,7 @@ server.registerTool("status", { description: "Get the current debug session stat
     lines.push(`\nLast event: ${eventLog[eventLog.length - 1]}`);
   }
 
-  return { content: [{ type: "text", text: lines.join("\n") }] };
+  return toolResult(lines.join("\n"));
 });
 
 // Helper functions

@@ -107,12 +107,15 @@ export class JDWPClient extends EventEmitter {
     string,
     { resolve: (classId: bigint) => void; requestId: number }
   >();
-  // Track all suspended threads (from breakpoints/steps)
-  private suspendedThreads = new Set<bigint>();
-  // Most recently suspended thread (convenience default)
-  private _lastSuspendedThreadId: bigint | null = null;
-  // Whether the VM is currently suspended (e.g. from suspend=y launch or VMStart)
-  private _vmSuspended = false;
+  // Consolidated thread/VM suspend state
+  private threadState = {
+    /** Threads currently suspended by breakpoints/steps */
+    suspended: new Set<bigint>(),
+    /** Most recently suspended thread (convenience default) */
+    lastSuspendedId: null as bigint | null,
+    /** Whether the entire VM is suspended (e.g. from suspend=y launch) */
+    vmSuspended: false,
+  };
 
   get isConnected(): boolean {
     return this.connected && this.handshakeComplete;
@@ -120,17 +123,45 @@ export class JDWPClient extends EventEmitter {
 
   /** Whether the entire VM is currently suspended (e.g. from suspend=y launch) */
   get vmSuspended(): boolean {
-    return this._vmSuspended;
+    return this.threadState.vmSuspended;
   }
 
   /** The most recently suspended thread (from breakpoint or step) */
   get currentThreadId(): bigint | null {
-    return this._lastSuspendedThreadId;
+    return this.threadState.lastSuspendedId;
   }
 
   /** All threads currently known to be suspended by breakpoints/steps */
   get allSuspendedThreadIds(): bigint[] {
-    return Array.from(this.suspendedThreads);
+    return Array.from(this.threadState.suspended);
+  }
+
+  // --- Thread state mutation helpers ---
+
+  private markThreadSuspended(threadId: bigint): void {
+    this.threadState.suspended.add(threadId);
+    this.threadState.lastSuspendedId = threadId;
+  }
+
+  private markThreadResumed(threadId: bigint): void {
+    this.threadState.suspended.delete(threadId);
+    if (this.threadState.lastSuspendedId === threadId) {
+      const remaining = this.allSuspendedThreadIds;
+      this.threadState.lastSuspendedId =
+        remaining.length > 0 ? remaining[remaining.length - 1] : null;
+    }
+  }
+
+  private markAllResumed(): void {
+    this.threadState.suspended.clear();
+    this.threadState.lastSuspendedId = null;
+    this.threadState.vmSuspended = false;
+  }
+
+  private resetThreadState(): void {
+    this.threadState.suspended.clear();
+    this.threadState.lastSuspendedId = null;
+    this.threadState.vmSuspended = false;
   }
 
   async connect(host: string, port: number): Promise<string> {
@@ -196,9 +227,7 @@ export class JDWPClient extends EventEmitter {
       this.connected = false;
       this.handshakeComplete = false;
       this.breakpoints.clear();
-      this.suspendedThreads.clear();
-      this._lastSuspendedThreadId = null;
-      this._vmSuspended = false;
+      this.resetThreadState();
     }
   }
 
@@ -286,8 +315,7 @@ export class JDWPClient extends EventEmitter {
             const requestId = reader.readInt();
             const threadId = reader.readThreadID();
             const location = reader.readLocation();
-            this.suspendedThreads.add(threadId);
-            this._lastSuspendedThreadId = threadId;
+            this.markThreadSuspended(threadId);
             this.emit("breakpoint", { requestId, threadId, location });
             break;
           }
@@ -295,8 +323,7 @@ export class JDWPClient extends EventEmitter {
             const requestId = reader.readInt();
             const threadId = reader.readThreadID();
             const location = reader.readLocation();
-            this.suspendedThreads.add(threadId);
-            this._lastSuspendedThreadId = threadId;
+            this.markThreadSuspended(threadId);
             // Auto-clear single step request
             this.clearEventRequest(EventKind.SingleStep, requestId).catch(() => {});
             this.emit("step", { requestId, threadId, location });
@@ -363,7 +390,7 @@ export class JDWPClient extends EventEmitter {
         );
 
         if (shouldPreserveSuspend) {
-          this._vmSuspended = true;
+          this.threadState.vmSuspended = true;
         } else {
           this.resumeVM().catch(() => {});
         }
@@ -400,135 +427,137 @@ export class JDWPClient extends EventEmitter {
     }
   }
 
+  /**
+   * High-level helper: build request data, send command, check error, parse reply.
+   * Eliminates the repeated Writer→sendCommand→checkError→Reader boilerplate.
+   */
+  private async sendRequest<T>(
+    commandSet: number,
+    command: number,
+    writeData: ((writer: JDWPWriter) => void) | null,
+    readReply: (reader: JDWPReader) => T,
+  ): Promise<T> {
+    let data: Buffer | undefined;
+    if (writeData) {
+      const writer = new JDWPWriter(this.idSizes);
+      writeData(writer);
+      data = writer.toBuffer();
+    }
+    const reply = await this.sendCommand(commandSet, command, data);
+    this.checkError(reply);
+    const reader = new JDWPReader(reply.data, this.idSizes);
+    return readReply(reader);
+  }
+
   // === High-level API ===
 
   async getVersion(): Promise<string> {
-    const reply = await this.sendCommand(CommandSet.VirtualMachine, VMCommand.Version);
-    this.checkError(reply);
-    const reader = new JDWPReader(reply.data, this.idSizes);
-    reader.readString(); // description
-    reader.readInt(); // jdwpMajor
-    reader.readInt(); // jdwpMinor
-    const vmVersion = reader.readString();
-    const vmName = reader.readString();
-    return `${vmName} ${vmVersion}`;
+    return this.sendRequest(CommandSet.VirtualMachine, VMCommand.Version, null, (r) => {
+      r.readString(); // description
+      r.readInt(); // jdwpMajor
+      r.readInt(); // jdwpMinor
+      const vmVersion = r.readString();
+      const vmName = r.readString();
+      return `${vmName} ${vmVersion}`;
+    });
   }
 
   async suspendVM(): Promise<void> {
     const reply = await this.sendCommand(CommandSet.VirtualMachine, VMCommand.Suspend);
     this.checkError(reply);
-    this._vmSuspended = true;
+    this.threadState.vmSuspended = true;
   }
 
   async resumeVM(): Promise<void> {
     const reply = await this.sendCommand(CommandSet.VirtualMachine, VMCommand.Resume);
     this.checkError(reply);
-    this.suspendedThreads.clear();
-    this._lastSuspendedThreadId = null;
-    this._vmSuspended = false;
+    this.markAllResumed();
   }
 
   async getClassesBySignature(
     signature: string,
   ): Promise<Array<{ refTypeTag: number; typeID: bigint; status: number }>> {
-    const writer = new JDWPWriter(this.idSizes);
-    writer.writeString(signature);
-    const reply = await this.sendCommand(
+    return this.sendRequest(
       CommandSet.VirtualMachine,
       VMCommand.ClassesBySignature,
-      writer.toBuffer(),
+      (w) => w.writeString(signature),
+      (r) => {
+        const count = r.readInt();
+        const classes = [];
+        for (let i = 0; i < count; i++) {
+          classes.push({
+            refTypeTag: r.readByte(),
+            typeID: r.readReferenceTypeID(),
+            status: r.readInt(),
+          });
+        }
+        return classes;
+      },
     );
-    this.checkError(reply);
-
-    const reader = new JDWPReader(reply.data, this.idSizes);
-    const count = reader.readInt();
-    const classes = [];
-    for (let i = 0; i < count; i++) {
-      classes.push({
-        refTypeTag: reader.readByte(),
-        typeID: reader.readReferenceTypeID(),
-        status: reader.readInt(),
-      });
-    }
-    return classes;
   }
 
   async getReferenceTypeSignature(refTypeId: bigint): Promise<string> {
-    const writer = new JDWPWriter(this.idSizes);
-    writer.writeReferenceTypeID(refTypeId);
-    const reply = await this.sendCommand(
+    return this.sendRequest(
       CommandSet.ReferenceType,
       ReferenceTypeCommand.Signature,
-      writer.toBuffer(),
+      (w) => w.writeReferenceTypeID(refTypeId),
+      (r) => r.readString(),
     );
-    this.checkError(reply);
-    const reader = new JDWPReader(reply.data, this.idSizes);
-    return reader.readString();
   }
 
   async getSourceFile(refTypeId: bigint): Promise<string> {
-    const writer = new JDWPWriter(this.idSizes);
-    writer.writeReferenceTypeID(refTypeId);
-    const reply = await this.sendCommand(
+    return this.sendRequest(
       CommandSet.ReferenceType,
       ReferenceTypeCommand.SourceFile,
-      writer.toBuffer(),
+      (w) => w.writeReferenceTypeID(refTypeId),
+      (r) => r.readString(),
     );
-    this.checkError(reply);
-    const reader = new JDWPReader(reply.data, this.idSizes);
-    return reader.readString();
   }
 
   async getMethods(
     refTypeId: bigint,
   ): Promise<Array<{ methodID: bigint; name: string; signature: string; modBits: number }>> {
-    const writer = new JDWPWriter(this.idSizes);
-    writer.writeReferenceTypeID(refTypeId);
-    const reply = await this.sendCommand(
+    return this.sendRequest(
       CommandSet.ReferenceType,
       ReferenceTypeCommand.Methods,
-      writer.toBuffer(),
+      (w) => w.writeReferenceTypeID(refTypeId),
+      (r) => {
+        const count = r.readInt();
+        const methods = [];
+        for (let i = 0; i < count; i++) {
+          methods.push({
+            methodID: r.readMethodID(),
+            name: r.readString(),
+            signature: r.readString(),
+            modBits: r.readInt(),
+          });
+        }
+        return methods;
+      },
     );
-    this.checkError(reply);
-
-    const reader = new JDWPReader(reply.data, this.idSizes);
-    const count = reader.readInt();
-    const methods = [];
-    for (let i = 0; i < count; i++) {
-      methods.push({
-        methodID: reader.readMethodID(),
-        name: reader.readString(),
-        signature: reader.readString(),
-        modBits: reader.readInt(),
-      });
-    }
-    return methods;
   }
 
   async getFields(
     refTypeId: bigint,
   ): Promise<Array<{ fieldID: bigint; name: string; signature: string; modBits: number }>> {
-    const writer = new JDWPWriter(this.idSizes);
-    writer.writeReferenceTypeID(refTypeId);
-    const reply = await this.sendCommand(
+    return this.sendRequest(
       CommandSet.ReferenceType,
       ReferenceTypeCommand.Fields,
-      writer.toBuffer(),
+      (w) => w.writeReferenceTypeID(refTypeId),
+      (r) => {
+        const count = r.readInt();
+        const fields = [];
+        for (let i = 0; i < count; i++) {
+          fields.push({
+            fieldID: r.readFieldID(),
+            name: r.readString(),
+            signature: r.readString(),
+            modBits: r.readInt(),
+          });
+        }
+        return fields;
+      },
     );
-    this.checkError(reply);
-
-    const reader = new JDWPReader(reply.data, this.idSizes);
-    const count = reader.readInt();
-    const fields = [];
-    for (let i = 0; i < count; i++) {
-      fields.push({
-        fieldID: reader.readFieldID(),
-        name: reader.readString(),
-        signature: reader.readString(),
-        modBits: reader.readInt(),
-      });
-    }
-    return fields;
   }
 
   async getLineTable(
@@ -539,28 +568,27 @@ export class JDWPClient extends EventEmitter {
     end: bigint;
     lines: Array<{ lineCodeIndex: bigint; lineNumber: number }>;
   }> {
-    const writer = new JDWPWriter(this.idSizes);
-    writer.writeReferenceTypeID(refTypeId);
-    writer.writeMethodID(methodId);
-    const reply = await this.sendCommand(
+    return this.sendRequest(
       CommandSet.Method,
       MethodCommand.LineTable,
-      writer.toBuffer(),
+      (w) => {
+        w.writeReferenceTypeID(refTypeId);
+        w.writeMethodID(methodId);
+      },
+      (r) => {
+        const start = r.readLong();
+        const end = r.readLong();
+        const lineCount = r.readInt();
+        const lines = [];
+        for (let i = 0; i < lineCount; i++) {
+          lines.push({
+            lineCodeIndex: r.readLong(),
+            lineNumber: r.readInt(),
+          });
+        }
+        return { start, end, lines };
+      },
     );
-    this.checkError(reply);
-
-    const reader = new JDWPReader(reply.data, this.idSizes);
-    const start = reader.readLong();
-    const end = reader.readLong();
-    const lineCount = reader.readInt();
-    const lines = [];
-    for (let i = 0; i < lineCount; i++) {
-      lines.push({
-        lineCodeIndex: reader.readLong(),
-        lineNumber: reader.readInt(),
-      });
-    }
-    return { start, end, lines };
   }
 
   async getVariableTable(
@@ -575,44 +603,48 @@ export class JDWPClient extends EventEmitter {
       slot: number;
     }>
   > {
-    const writer = new JDWPWriter(this.idSizes);
-    writer.writeReferenceTypeID(refTypeId);
-    writer.writeMethodID(methodId);
-    const reply = await this.sendCommand(
+    return this.sendRequest(
       CommandSet.Method,
       MethodCommand.VariableTable,
-      writer.toBuffer(),
+      (w) => {
+        w.writeReferenceTypeID(refTypeId);
+        w.writeMethodID(methodId);
+      },
+      (r) => {
+        r.readInt(); // argCnt
+        const count = r.readInt();
+        const variables = [];
+        for (let i = 0; i < count; i++) {
+          variables.push({
+            codeIndex: r.readLong(),
+            name: r.readString(),
+            signature: r.readString(),
+            length: r.readInt(),
+            slot: r.readInt(),
+          });
+        }
+        return variables;
+      },
     );
-    this.checkError(reply);
-
-    const reader = new JDWPReader(reply.data, this.idSizes);
-    reader.readInt(); // argCnt
-    const count = reader.readInt();
-    const variables = [];
-    for (let i = 0; i < count; i++) {
-      variables.push({
-        codeIndex: reader.readLong(),
-        name: reader.readString(),
-        signature: reader.readString(),
-        length: reader.readInt(),
-        slot: reader.readInt(),
-      });
-    }
-    return variables;
   }
 
   // === Thread operations ===
 
   async getAllThreads(): Promise<ThreadInfo[]> {
-    const reply = await this.sendCommand(CommandSet.VirtualMachine, VMCommand.AllThreads);
-    this.checkError(reply);
+    const threadIds = await this.sendRequest(
+      CommandSet.VirtualMachine,
+      VMCommand.AllThreads,
+      null,
+      (r) => {
+        const count = r.readInt();
+        const ids: bigint[] = [];
+        for (let i = 0; i < count; i++) ids.push(r.readThreadID());
+        return ids;
+      },
+    );
 
-    const reader = new JDWPReader(reply.data, this.idSizes);
-    const count = reader.readInt();
     const threads: ThreadInfo[] = [];
-
-    for (let i = 0; i < count; i++) {
-      const id = reader.readThreadID();
+    for (const id of threadIds) {
       try {
         const name = await this.getThreadName(id);
         const statusInfo = await this.getThreadStatus(id);
@@ -631,34 +663,26 @@ export class JDWPClient extends EventEmitter {
   }
 
   async getThreadName(threadId: bigint): Promise<string> {
-    const writer = new JDWPWriter(this.idSizes);
-    writer.writeThreadID(threadId);
-    const reply = await this.sendCommand(
+    return this.sendRequest(
       CommandSet.ThreadReference,
       ThreadCommand.Name,
-      writer.toBuffer(),
+      (w) => w.writeThreadID(threadId),
+      (r) => r.readString(),
     );
-    this.checkError(reply);
-    const reader = new JDWPReader(reply.data, this.idSizes);
-    return reader.readString();
   }
 
   async getThreadStatus(
     threadId: bigint,
   ): Promise<{ threadStatus: number; suspendStatus: number }> {
-    const writer = new JDWPWriter(this.idSizes);
-    writer.writeThreadID(threadId);
-    const reply = await this.sendCommand(
+    return this.sendRequest(
       CommandSet.ThreadReference,
       ThreadCommand.Status,
-      writer.toBuffer(),
+      (w) => w.writeThreadID(threadId),
+      (r) => ({
+        threadStatus: r.readInt(),
+        suspendStatus: r.readInt(),
+      }),
     );
-    this.checkError(reply);
-    const reader = new JDWPReader(reply.data, this.idSizes);
-    return {
-      threadStatus: reader.readInt(),
-      suspendStatus: reader.readInt(),
-    };
   }
 
   async suspendThread(threadId: bigint): Promise<void> {
@@ -670,7 +694,7 @@ export class JDWPClient extends EventEmitter {
       writer.toBuffer(),
     );
     this.checkError(reply);
-    this.suspendedThreads.add(threadId);
+    this.markThreadSuspended(threadId);
   }
 
   async resumeThread(threadId: bigint): Promise<void> {
@@ -682,13 +706,7 @@ export class JDWPClient extends EventEmitter {
       writer.toBuffer(),
     );
     this.checkError(reply);
-    this.suspendedThreads.delete(threadId);
-    // Update last suspended thread pointer
-    if (this._lastSuspendedThreadId === threadId) {
-      // Point to another suspended thread if any, or null
-      const remaining = this.allSuspendedThreadIds;
-      this._lastSuspendedThreadId = remaining.length > 0 ? remaining[remaining.length - 1] : null;
-    }
+    this.markThreadResumed(threadId);
   }
 
   // === Stack frames ===
@@ -848,16 +866,12 @@ export class JDWPClient extends EventEmitter {
   }
 
   async getStringValue(objectId: bigint): Promise<string> {
-    const writer = new JDWPWriter(this.idSizes);
-    writer.writeObjectID(objectId);
-    const reply = await this.sendCommand(
+    return this.sendRequest(
       CommandSet.StringReference,
       StringReferenceCommand.Value,
-      writer.toBuffer(),
+      (w) => w.writeObjectID(objectId),
+      (r) => r.readString(),
     );
-    this.checkError(reply);
-    const reader = new JDWPReader(reply.data, this.idSizes);
-    return reader.readString();
   }
 
   async getObjectFields(
@@ -991,23 +1005,69 @@ export class JDWPClient extends EventEmitter {
 
   // === Breakpoints ===
 
+  /**
+   * Resolve a class by name, waiting for it to load if not yet available.
+   * Returns the classId and the original class lookup results.
+   */
+  private async resolveClass(
+    className: string,
+  ): Promise<{ classId: bigint; refTypeTag: number }> {
+    const jniSig = classNameToJNISignature(className);
+    const classes = await this.getClassesBySignature(jniSig);
+
+    if (classes.length === 0) {
+      const classId = await this.waitForClassPrepare(className);
+      return { classId, refTypeTag: TypeTag.Class };
+    }
+    return { classId: classes[0].typeID, refTypeTag: classes[0].refTypeTag };
+  }
+
+  /**
+   * Register a breakpoint event request at a specific location and track it.
+   */
+  private async registerBreakpoint(
+    className: string,
+    line: number,
+    suspendPolicy: BreakpointSuspendPolicy,
+    refTypeTag: number,
+    classId: bigint,
+    methodId: bigint,
+    codeIndex: bigint,
+  ): Promise<BreakpointInfo> {
+    const jdwpSuspendPolicy =
+      suspendPolicy === "all" ? SuspendPolicy.All : SuspendPolicy.EventThread;
+
+    const requestId = await this.sendRequest(
+      CommandSet.EventRequest,
+      EventRequestCommand.Set,
+      (w) => {
+        w.writeByte(EventKind.Breakpoint);
+        w.writeByte(jdwpSuspendPolicy);
+        w.writeInt(1); // modifier count
+        w.writeByte(ModKind.LocationOnly);
+        w.writeLocation(refTypeTag, classId, methodId, codeIndex);
+      },
+      (r) => r.readInt(),
+    );
+
+    const bp: BreakpointInfo = {
+      requestId,
+      className,
+      line,
+      suspendPolicy,
+      classId,
+      methodId,
+    };
+    this.breakpoints.set(requestId, bp);
+    return bp;
+  }
+
   async setBreakpoint(
     className: string,
     line: number,
     suspendPolicy: BreakpointSuspendPolicy = "thread",
   ): Promise<BreakpointInfo> {
-    const jniSig = classNameToJNISignature(className);
-
-    // Try to find the class
-    const classes = await this.getClassesBySignature(jniSig);
-    let classId: bigint;
-
-    if (classes.length === 0) {
-      // Class not loaded yet - set up a ClassPrepare event to wait for it
-      classId = await this.waitForClassPrepare(className);
-    } else {
-      classId = classes[0].typeID;
-    }
+    const { classId, refTypeTag } = await this.resolveClass(className);
 
     // Find the method and code index for the given line
     const methods = await this.getMethods(classId);
@@ -1039,40 +1099,15 @@ export class JDWPClient extends EventEmitter {
       );
     }
 
-    // Determine type tag
-    const typeTag = classes.length > 0 ? classes[0].refTypeTag : TypeTag.Class;
-
-    // Set the breakpoint event request
-    const jdwpSuspendPolicy =
-      suspendPolicy === "all" ? SuspendPolicy.All : SuspendPolicy.EventThread;
-    const writer = new JDWPWriter(this.idSizes);
-    writer.writeByte(EventKind.Breakpoint);
-    writer.writeByte(jdwpSuspendPolicy);
-    writer.writeInt(1); // modifier count
-    // LocationOnly modifier
-    writer.writeByte(ModKind.LocationOnly);
-    writer.writeLocation(typeTag, classId, bestMethod.methodID, bestCodeIndex);
-
-    const reply = await this.sendCommand(
-      CommandSet.EventRequest,
-      EventRequestCommand.Set,
-      writer.toBuffer(),
-    );
-    this.checkError(reply);
-
-    const reader = new JDWPReader(reply.data, this.idSizes);
-    const requestId = reader.readInt();
-
-    const bp: BreakpointInfo = {
-      requestId,
+    return this.registerBreakpoint(
       className,
-      line: bestLine,
+      bestLine,
       suspendPolicy,
+      refTypeTag,
       classId,
-      methodId: bestMethod.methodID,
-    };
-    this.breakpoints.set(requestId, bp);
-    return bp;
+      bestMethod.methodID,
+      bestCodeIndex,
+    );
   }
 
   async setBreakpointByMethod(
@@ -1080,16 +1115,7 @@ export class JDWPClient extends EventEmitter {
     methodName: string,
     suspendPolicy: BreakpointSuspendPolicy = "thread",
   ): Promise<BreakpointInfo> {
-    const jniSig = classNameToJNISignature(className);
-
-    const classes = await this.getClassesBySignature(jniSig);
-    let classId: bigint;
-
-    if (classes.length === 0) {
-      classId = await this.waitForClassPrepare(className);
-    } else {
-      classId = classes[0].typeID;
-    }
+    const { classId, refTypeTag } = await this.resolveClass(className);
 
     const methods = await this.getMethods(classId);
     const targetMethod = methods.find((m) => m.name === methodName);
@@ -1102,7 +1128,6 @@ export class JDWPClient extends EventEmitter {
       );
     }
 
-    // Get the first executable line of the method
     const lineTable = await this.getLineTable(classId, targetMethod.methodID);
     if (lineTable.lines.length === 0) {
       throw new Error(
@@ -1111,26 +1136,30 @@ export class JDWPClient extends EventEmitter {
     }
 
     const firstLine = lineTable.lines[0];
-    return this.setBreakpoint(className, firstLine.lineNumber, suspendPolicy);
+    return this.registerBreakpoint(
+      className,
+      firstLine.lineNumber,
+      suspendPolicy,
+      refTypeTag,
+      classId,
+      targetMethod.methodID,
+      firstLine.lineCodeIndex,
+    );
   }
 
   private async waitForClassPrepare(className: string): Promise<bigint> {
-    // Set up a ClassPrepare event request with ClassMatch modifier
-    const writer = new JDWPWriter(this.idSizes);
-    writer.writeByte(EventKind.ClassPrepare);
-    writer.writeByte(SuspendPolicy.All);
-    writer.writeInt(1); // modifier count
-    writer.writeByte(ModKind.ClassMatch);
-    writer.writeString(className);
-
-    const reply = await this.sendCommand(
+    const requestId = await this.sendRequest(
       CommandSet.EventRequest,
       EventRequestCommand.Set,
-      writer.toBuffer(),
+      (w) => {
+        w.writeByte(EventKind.ClassPrepare);
+        w.writeByte(SuspendPolicy.All);
+        w.writeInt(1); // modifier count
+        w.writeByte(ModKind.ClassMatch);
+        w.writeString(className);
+      },
+      (r) => r.readInt(),
     );
-    this.checkError(reply);
-    const reader = new JDWPReader(reply.data, this.idSizes);
-    const requestId = reader.readInt();
 
     return await new Promise<bigint>((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -1168,15 +1197,15 @@ export class JDWPClient extends EventEmitter {
   }
 
   private async clearEventRequest(eventKind: number, requestId: number): Promise<void> {
-    const writer = new JDWPWriter(this.idSizes);
-    writer.writeByte(eventKind);
-    writer.writeInt(requestId);
-    const reply = await this.sendCommand(
+    await this.sendRequest(
       CommandSet.EventRequest,
       EventRequestCommand.Clear,
-      writer.toBuffer(),
+      (w) => {
+        w.writeByte(eventKind);
+        w.writeInt(requestId);
+      },
+      () => undefined,
     );
-    this.checkError(reply);
   }
 
   getBreakpoints(): BreakpointInfo[] {
@@ -1185,44 +1214,40 @@ export class JDWPClient extends EventEmitter {
 
   // === Stepping ===
 
-  async stepOver(threadId: bigint): Promise<void> {
-    await this.createStepRequest(threadId, StepSize.Line, StepDepth.Over);
+  private async performStep(threadId: bigint, depth: number): Promise<void> {
+    await this.createStepRequest(threadId, StepSize.Line, depth);
     // Resume only this thread so other suspended threads remain paused
-    this.suspendedThreads.delete(threadId);
+    this.markThreadResumed(threadId);
     await this.resumeThread(threadId);
+  }
+
+  async stepOver(threadId: bigint): Promise<void> {
+    return this.performStep(threadId, StepDepth.Over);
   }
 
   async stepInto(threadId: bigint): Promise<void> {
-    await this.createStepRequest(threadId, StepSize.Line, StepDepth.Into);
-    this.suspendedThreads.delete(threadId);
-    await this.resumeThread(threadId);
+    return this.performStep(threadId, StepDepth.Into);
   }
 
   async stepOut(threadId: bigint): Promise<void> {
-    await this.createStepRequest(threadId, StepSize.Line, StepDepth.Out);
-    this.suspendedThreads.delete(threadId);
-    await this.resumeThread(threadId);
+    return this.performStep(threadId, StepDepth.Out);
   }
 
   private async createStepRequest(threadId: bigint, size: number, depth: number): Promise<number> {
-    const writer = new JDWPWriter(this.idSizes);
-    writer.writeByte(EventKind.SingleStep);
-    writer.writeByte(SuspendPolicy.EventThread); // Only suspend the stepping thread
-    writer.writeInt(1); // modifier count
-    // Step modifier
-    writer.writeByte(ModKind.Step);
-    writer.writeThreadID(threadId);
-    writer.writeInt(size);
-    writer.writeInt(depth);
-
-    const reply = await this.sendCommand(
+    return this.sendRequest(
       CommandSet.EventRequest,
       EventRequestCommand.Set,
-      writer.toBuffer(),
+      (w) => {
+        w.writeByte(EventKind.SingleStep);
+        w.writeByte(SuspendPolicy.EventThread); // Only suspend the stepping thread
+        w.writeInt(1); // modifier count
+        w.writeByte(ModKind.Step);
+        w.writeThreadID(threadId);
+        w.writeInt(size);
+        w.writeInt(depth);
+      },
+      (r) => r.readInt(),
     );
-    this.checkError(reply);
-    const reader = new JDWPReader(reply.data, this.idSizes);
-    return reader.readInt();
   }
 }
 

@@ -11,14 +11,12 @@ Enables AI assistants (Claude, etc.) to set breakpoints, step through code, insp
 - **Breakpoint debugging** — Set breakpoints by class and line, step over/into/out, resume
 - **Multi-thread support** — Per-thread suspend, resume, and step (independent thread control)
 - **Variable inspection** — Local variables, object fields, array elements, string values
-- **Build system integration** — Auto-detect and launch Gradle / Maven / Spring Boot projects
-- **22 MCP tools** — Full debug workflow from project detection to variable inspection
+- **17 MCP tools** — Full debug workflow from connection to variable inspection
 
 ## Prerequisites
 
 - **Node.js** 18+
 - **Java JDK** 11+ (for the target application)
-- Gradle or Maven (optional, for build system integration)
 
 ## Setup
 
@@ -68,49 +66,30 @@ Any MCP-compatible client can use this server. Set the command to `node` and the
 
 ## Quick Start
 
-### Option A: Launch a project with debug
-
-```
-1. detect_project({ projectDir: "/path/to/project" })
-2. launch({ projectDir: "/path/to/project" })       // builds & starts with JDWP on port 5005, verifies port is connectable
-3. connect({ host: "localhost", port: 5005 })
-4. set_breakpoint({ className: "com.example.MyClass", line: 25 })
-5. get_stack_trace({})
-6. get_variables({})
-```
-
-### Option B: Attach to a running JVM
-
-Start your app with JDWP enabled:
+Start your application with JDWP enabled:
 
 ```bash
 java -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005 -jar app.jar
 ```
 
-Then connect via the MCP tool:
+Then connect and debug via the MCP tools:
 
 ```
-connect({ host: "localhost", port: 5005 })
+1. connect({ host: "localhost", port: 5005 })
+2. set_breakpoint({ className: "com.example.MyClass", line: 25 })
+3. get_stack_trace({})
+4. get_variables({})
 ```
 
 ## MCP Tools
 
 | Category        | Tools                                                                                |
 | --------------- | ------------------------------------------------------------------------------------ |
-| **Project**     | `detect_project`, `build`, `launch` (with JDWP port verification), `stop`, `process_output` |
 | **Connection**  | `connect`, `disconnect`                                                              |
 | **Breakpoints** | `set_breakpoint`, `remove_breakpoint`, `list_breakpoints`                            |
 | **Execution**   | `resume`, `pause`, `step_over`, `step_into`, `step_out`                              |
 | **Inspection**  | `get_stack_trace`, `get_variables`, `inspect_object`, `inspect_array`, `get_threads` |
 | **Status**      | `get_events`, `status`                                                               |
-
-## Build System Support
-
-| Build System    | Detection          | Default Task                    | Spring Boot   |
-| --------------- | ------------------ | ------------------------------- | ------------- |
-| Gradle (Groovy) | `build.gradle`     | `run` / `bootRun`               | Auto-detected |
-| Gradle (Kotlin) | `build.gradle.kts` | `run` / `bootRun`               | Auto-detected |
-| Maven           | `pom.xml`          | `exec:java` / `spring-boot:run` | Auto-detected |
 
 ## Development
 

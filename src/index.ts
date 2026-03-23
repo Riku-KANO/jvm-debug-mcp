@@ -5,14 +5,6 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { JDWPClient, formatValue } from "./jdwp/client.js";
 import { ThreadStatus } from "./jdwp/constants.js";
-import {
-  detectBuildSystem,
-  buildProject,
-  launchWithDebug,
-  stopProcess,
-  getProcessOutput,
-  getCurrentProcess,
-} from "./launcher.js";
 
 const client = new JDWPClient();
 
@@ -123,153 +115,6 @@ function stepHandler(
     return toolResult(`Stepping ${direction} thread ${tid}...${suffix}`);
   });
 }
-
-// --- Tool: detect_project ---
-server.registerTool(
-  "detect_project",
-  {
-    description:
-      "Detect the build system (Gradle/Maven) in a project directory. Scans for build.gradle, build.gradle.kts, or pom.xml.",
-    inputSchema: {
-      projectDir: z.string().describe("Path to the project root directory"),
-    },
-  },
-  ({ projectDir }) => {
-    const detected = detectBuildSystem(projectDir);
-    if (!detected) {
-      return toolResult(
-        `No build system detected in ${projectDir}.\nLooked for: build.gradle, build.gradle.kts, pom.xml`,
-      );
-    }
-    const lines = [
-      `Build system: ${detected.buildSystem}`,
-      `Project dir: ${detected.projectDir}`,
-      `Build files: ${detected.buildFiles.join(", ")}`,
-      `Has wrapper: ${detected.hasWrapper}`,
-    ];
-    return toolResult(lines.join("\n"));
-  },
-);
-
-// --- Tool: build ---
-server.registerTool(
-  "build",
-  {
-    description: "Build a Gradle or Maven project. Runs 'gradle build -x test' or 'mvn compile'.",
-    inputSchema: {
-      projectDir: z.string().describe("Path to the project root directory"),
-      buildSystem: z
-        .enum(["gradle", "gradle-kts", "maven"])
-        .optional()
-        .describe("Build system (auto-detected if omitted)"),
-    },
-  },
-  async ({ projectDir, buildSystem }) => {
-    addEvent(`Building project: ${projectDir}`);
-    const result = await buildProject(projectDir, buildSystem);
-    addEvent(`Build ${result.success ? "succeeded" : "failed"}: ${result.buildSystem}`);
-    return toolResult(
-      result.success
-        ? `Build successful (${result.buildSystem})${result.output ? `\n${result.output}` : ""}`
-        : `Build failed (${result.buildSystem}):\n${result.output}`,
-      !result.success || undefined,
-    );
-  },
-);
-
-// --- Tool: launch ---
-server.registerTool(
-  "launch",
-  {
-    description:
-      "Build and launch a Gradle/Maven project with JDWP debug agent enabled. " +
-      "Auto-detects build system and configures debug flags. After launch, use 'connect' to attach the debugger. " +
-      "Supported: Gradle (run, bootRun), Maven (spring-boot:run, exec:java).",
-    inputSchema: {
-      projectDir: z.string().describe("Path to the project root directory"),
-      task: z
-        .string()
-        .optional()
-        .describe(
-          "Run task (e.g., 'bootRun', 'run', 'spring-boot:run', 'exec:java'). Auto-detected if omitted.",
-        ),
-      buildSystem: z
-        .enum(["gradle", "gradle-kts", "maven"])
-        .optional()
-        .describe("Build system (auto-detected if omitted)"),
-      port: z.number().default(5005).describe("JDWP debug port (default: 5005)"),
-      suspend: z
-        .boolean()
-        .default(false)
-        .describe("Suspend JVM on start, waiting for debugger to connect (default: false)"),
-      jvmArgs: z.array(z.string()).default([]).describe("Additional JVM arguments"),
-      args: z.array(z.string()).default([]).describe("Application arguments"),
-      buildFirst: z.boolean().default(true).describe("Build before running (default: true)"),
-    },
-  },
-  async ({ projectDir, task, buildSystem, port, suspend, jvmArgs, args, buildFirst }) => {
-    addEvent(`Launching project: ${projectDir} (port=${port})`);
-    const result = await launchWithDebug({
-      projectDir,
-      task,
-      buildSystem,
-      port,
-      suspend,
-      jvmArgs,
-      args,
-      buildFirst,
-    });
-    addEvent(
-      `Launch ${result.success ? "succeeded" : "failed"}: ${result.buildSystem} ${result.task}`,
-    );
-    return toolResult(result.message, !result.success || undefined);
-  },
-);
-
-// --- Tool: stop ---
-server.registerTool(
-  "stop",
-  { description: "Stop the currently launched debug target process" },
-  async () => {
-    const result = stopProcess();
-    if (result.stopped) {
-      addEvent("Target process stopped");
-      if (client.isConnected) {
-        try {
-          await client.disconnect();
-        } catch {
-          /* ignore */
-        }
-        addEvent("Debugger disconnected");
-      }
-    }
-    return toolResult(result.message);
-  },
-);
-
-// --- Tool: process_output ---
-server.registerTool(
-  "process_output",
-  {
-    description: "Get recent stdout/stderr output from the launched process",
-    inputSchema: {
-      lines: z.number().default(50).describe("Number of recent lines to return"),
-    },
-  },
-  ({ lines: lineCount }) => {
-    const proc = getCurrentProcess();
-    if (!proc) {
-      return toolResult("No launched process.");
-    }
-    const output = getProcessOutput(lineCount);
-    if (output.length === 0) {
-      return toolResult("No output yet.");
-    }
-    const alive = !proc.process.killed && proc.process.exitCode === null;
-    const header = `Process (PID=${String(proc.pid)}, ${alive ? "running" : "exited"}, ${proc.buildSystem} ${proc.task}):`;
-    return toolResult(`${header}\n${output.join("\n")}`);
-  },
-);
 
 // --- Tool: connect ---
 server.registerTool(
@@ -661,13 +506,9 @@ server.registerTool("status", { description: "Get the current debug session stat
   const suspendedThreads = connected ? client.allSuspendedThreadIds : [];
   const currentThread = client.currentThreadId;
 
-  const proc = getCurrentProcess();
-  const procAlive = proc !== null && !proc.process.killed && proc.process.exitCode === null;
-
   const vmSuspended = connected ? client.vmSuspended : false;
 
   const lines = [
-    `Launched process: ${proc ? `PID=${String(proc.pid)} (${procAlive ? "running" : "exited"}, ${proc.buildSystem} ${proc.task}, port=${proc.port})` : "none"}`,
     `Debugger connected: ${connected}`,
     `VM suspended: ${vmSuspended}`,
     `Breakpoints: ${bps.length}`,

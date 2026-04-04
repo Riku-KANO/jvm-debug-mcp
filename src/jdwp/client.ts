@@ -167,7 +167,10 @@ export class JDWPClient extends EventEmitter {
 
   async connect(host: string, port: number): Promise<string> {
     return await new Promise((resolve, reject) => {
-      this.socket = net.createConnection({ host, port }, () => {
+      this.socket = net.createConnection({ host, port, autoSelectFamily: true }, () => {
+        // Disable Nagle's algorithm for low-latency JDWP communication
+        this.socket?.setNoDelay(true);
+        this.socket?.setKeepAlive(true, 30000);
         // Send handshake
         this.socket?.write(HANDSHAKE);
       });
